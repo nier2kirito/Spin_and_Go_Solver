@@ -17,7 +17,7 @@ using namespace std;
 
 // Global constants here (We should take care of all the combinations of (2+5) cards)
 const int NUM_CLUSTERS_OPP = 30;        //clusters for opponent starting-hand clustering
-const int N_RANDOM_RIVER_SAMPLES = 10e9; // Number of river configurations to sample
+const int N_RANDOM_RIVER_SAMPLES = 1e9; // Number of river configurations to sample
 const int N_CLUSTER_RUNS = 1;          // Number of runs for k-means clustering for rivers (Let's try 1 for now and see how much time it takes)
 
 // Function prototype for parseCanonicalRiver
@@ -49,7 +49,7 @@ string cardToStr(const Card &c) { return c.rank + c.suit; }
 vector<Card> generateDeck() {
     vector<Card> deck;
     vector<string> SUITS = {"h", "d", "c", "s"};
-    vector<string> RANKS = {"A", "K", "Q", "J", "10", "9", "8", "7", "6", "5", "4", "3", "2"};
+    vector<string> RANKS = {"2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"};
     for (const string &suit : SUITS) {
         for (const string &rank : RANKS) {
             deck.push_back(Card{rank, suit});
@@ -69,19 +69,31 @@ string canonicalRiver(const vector<Card> &river) {
     // Track which suits we've seen and in what order
     vector<string> seenSuits;
     for (const auto &card : allCards) {
+        // Validate suit before using it
+        if (card.suit != "c" && card.suit != "d" && card.suit != "h" && card.suit != "s") {
+            cerr << "Error: Invalid suit '" << card.suit << "' detected" << endl;
+            return ""; // Return empty string to indicate error
+        }
+        
         if (find(seenSuits.begin(), seenSuits.end(), card.suit) == seenSuits.end()) {
             seenSuits.push_back(card.suit);
         }
     }
     
     // Map each suit to its canonical representation
-    for (size_t i = 0; i < seenSuits.size(); i++) {
+    for (size_t i = 0; i < seenSuits.size() && i < canonicalSuits.size(); i++) {
         suitMap[seenSuits[i]] = canonicalSuits[i];
     }
 
     // Generate canonical representation
     string cardsStr = "";
     for (const auto &c : allCards) {
+        // Validate rank and suit before using
+        if (c.rank.empty() || c.suit.empty() || 
+            suitMap.find(c.suit) == suitMap.end()) {
+            cerr << "Error: Invalid card data detected" << endl;
+            return ""; // Return empty string to indicate error
+        }
         cardsStr += c.rank + suitMap[c.suit] + " ";
     }
     
@@ -310,7 +322,7 @@ vector<double> computeRiverEquity(const vector<Card> &river,
 
 // Function to save river equities to CSV file
 void saveRiverEquitiesToCSV(const vector<pair<string, double>> &riverEquities, 
-                            const string &filename = "river_equities_processed.csv") {
+                            const string &filename = "river_equities_canonical.csv") {
     ofstream outFile(filename);
     outFile << "RiverID,Equity\n";
     for (const auto &p : riverEquities) {
@@ -323,7 +335,7 @@ void saveRiverEquitiesToCSV(const vector<pair<string, double>> &riverEquities,
 // Function to load existing river equities from CSV file
 bool loadRiverEquitiesFromCSV(vector<pair<string, double>> &riverEquities, 
                              unordered_set<string> &seenRiverCanon,
-                             const string &filename = "river_equities_processed.csv") {
+                             const string &filename = "river_equities_canonical.csv") {
     ifstream inFile(filename);
     if (!inFile.is_open()) {
         return false;
@@ -511,8 +523,8 @@ bool are_hands_isomorphic(const string &hand1, const string &hand2) {
 }
 
 // Function to process river equities CSV and remove isomorphic hands
-void remove_isomorphic_hands(const string &inputFilename = "river_equities_processed.csv", 
-                             const string &outputFilename = "river_equities_processed.csv") {
+void remove_isomorphic_hands(const string &inputFilename = "river_equities_canonical.csv", 
+                             const string &outputFilename = "river_equities_canonical.csv") {
     // Read all records from the input file
     ifstream inFile(inputFilename);
     if (!inFile.is_open()) {
@@ -637,7 +649,7 @@ void generateUniqueCanonicalRivers(vector<pair<string, double>> &riverEquities,
     for (int r1 = 0; r1 < static_cast<int>(RANKS.size()); r1++) {
         for (int r2 = r1; r2 < static_cast<int>(RANKS.size()); r2++) {  // Hero's hole cards should be ordered
             // Board cards can be in any order, but we'll enforce ordering to avoid duplicates
-            for (int b1 = 0; b1 < static_cast<int>(RANKS.size()); b1++) {
+            for (int b1 = r2; b1 < static_cast<int>(RANKS.size()); b1++) {
                 for (int b2 = b1; b2 < static_cast<int>(RANKS.size()); b2++) {
                     for (int b3 = b2; b3 < static_cast<int>(RANKS.size()); b3++) {
                         for (int b4 = b3; b4 < static_cast<int>(RANKS.size()); b4++) {
@@ -691,95 +703,1437 @@ void generateUniqueCanonicalRivers(vector<pair<string, double>> &riverEquities,
     cout << "\nGenerated " << count << " unique canonical river combinations" << endl;
 }
 
-// Modified helper function: recursively assign suits with the rule that suits must follow the order:
-// suit(r1) <= suit(r2) <= suit(r3) <= suit(r4) <= suit(r5) <= suit(r6) <= suit(r7)
+// New function to generate canonical suit arrangements based on predefined patterns
 void generateCanonicalSuitAssignments(
-    vector<pair<string, double>> &riverEquities,
-    int &count,
+    vector<pair<string, double>> &riverEquities, 
+    int &count, 
     int maxSamples,
-    const vector<string> &RANKS,
+    const vector<string> &RANKS, 
     const vector<string> &SUITS,
     int r1, int r2, int b1, int b2, int b3, int b4, int b5,
     const vector<int> &rankCounts,
     const chrono::steady_clock::time_point &startTime) {
+    
+    // Create a rank pattern representation
+    vector<int> rankPattern;
+    for (int count : rankCounts) {
+        if (count > 0) {
+            rankPattern.push_back(count);
+        }
+    }
+    // Sort in descending order to get a canonical rank pattern
+    sort(rankPattern.begin(), rankPattern.end(), greater<int>());
+    
+    // Map from rank indices to their positions in the hand
+    vector<vector<int>> rankPositions(RANKS.size());
+    vector<int> rankIndices = {r1, r2, b1, b2, b3, b4, b5};
+    for (int i = 0; i < 7; i++) {
+        rankPositions[rankIndices[i]].push_back(i);
+    }
+    
+    // Convert rank pattern to string key
+    string rankPatternKey = "";
+    for (size_t i = 0; i < rankPattern.size(); i++) {
+        if (i > 0) rankPatternKey += ",";
+        rankPatternKey += to_string(rankPattern[i]);
+    }
+    
+    // Define the canonical suit patterns for each rank pattern
+    static unordered_map<string, vector<vector<string>>> rankPatternToSuitPatterns;
+    
+    // Initialize patterns only once
+    if (rankPatternToSuitPatterns.empty()) {
+ // (4, 3)
+rankPatternToSuitPatterns["4,3"] = {
+    {"c", "d", "h", "s", "c", "d", "h"}
+};
 
-    // Our fixed order for the 7 cards
-    vector<int> rankIndices = { r1, r2, b1, b2, b3, b4, b5 };  // Fixed parameter names to match function signature
+// (4, 2, 1)
+rankPatternToSuitPatterns["4,2,1"] = {
+    {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "h"}
+};
 
-    // Used cards in the deck
-    vector<bool> usedCards(RANKS.size() * SUITS.size(), false);
+// (4, 1, 1, 1)
+rankPatternToSuitPatterns["4,1,1,1"] = {
+    {"c", "d", "h", "s", "c", "c", "c"},
+            {"c", "d", "h", "s", "c", "c", "d"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "d"},
+            {"c", "d", "h", "s", "c", "d", "h"}
+};
 
-    // partialHand will hold the 7 cards as they are assigned
-    vector<Card> partialHand;
-    partialHand.reserve(7);
+// (3, 3, 1)
+rankPatternToSuitPatterns["3,3,1"] = {
+    {"c", "d", "h", "c", "d", "h", "c"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "d", "s", "c"},
+            {"c", "d", "h", "c", "d", "s", "h"},
+            {"c", "d", "h", "c", "d", "s", "s"}
+};
 
-    // Keep track of the current minimum suit index
-    int currentMinSuitIndex = 0;
+// (3, 2, 2)
+rankPatternToSuitPatterns["3,2,2"] = {
+    {"c", "d", "h", "c", "d", "c", "d"},
+            {"c", "d", "h", "c", "d", "c", "h"},
+            {"c", "d", "h", "c", "d", "c", "s"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "s", "c", "d"},
+            {"c", "d", "h", "c", "s", "c", "s"},
+            {"c", "d", "h", "c", "s", "d", "h"},
+            {"c", "d", "h", "c", "s", "d", "s"}
+};
 
-    // Use a hash set for O(1) lookups instead of linear search
+// (3, 2, 1, 1)
+rankPatternToSuitPatterns["3,2,1,1"] = {
+    {"c", "d", "h", "c", "d", "c", "c"},
+            {"c", "d", "h", "c", "d", "c", "d"},
+            {"c", "d", "h", "c", "d", "c", "h"},
+            {"c", "d", "h", "c", "d", "c", "s"},
+            {"c", "d", "h", "c", "d", "h", "c"},
+            {"c", "d", "h", "c", "d", "h", "h"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "d", "s", "c"},
+            {"c", "d", "h", "c", "d", "s", "h"},
+            {"c", "d", "h", "c", "d", "s", "s"},
+            {"c", "d", "h", "c", "s", "c", "c"},
+            {"c", "d", "h", "c", "s", "c", "d"},
+            {"c", "d", "h", "c", "s", "c", "s"},
+            {"c", "d", "h", "c", "s", "d", "c"},
+            {"c", "d", "h", "c", "s", "d", "d"},
+            {"c", "d", "h", "c", "s", "d", "h"},
+            {"c", "d", "h", "c", "s", "d", "s"},
+            {"c", "d", "h", "c", "s", "s", "c"},
+            {"c", "d", "h", "c", "s", "s", "d"},
+            {"c", "d", "h", "c", "s", "s", "s"}
+};
+
+// (3, 1, 1, 1, 1)
+rankPatternToSuitPatterns["3,1,1,1,1"] = {
+    {"c", "d", "h", "c", "c", "c", "c"},
+            {"c", "d", "h", "c", "c", "c", "d"},
+            {"c", "d", "h", "c", "c", "c", "s"},
+            {"c", "d", "h", "c", "c", "d", "c"},
+            {"c", "d", "h", "c", "c", "d", "d"},
+            {"c", "d", "h", "c", "c", "d", "h"},
+            {"c", "d", "h", "c", "c", "d", "s"},
+            {"c", "d", "h", "c", "c", "s", "c"},
+            {"c", "d", "h", "c", "c", "s", "d"},
+            {"c", "d", "h", "c", "c", "s", "s"},
+            {"c", "d", "h", "c", "d", "c", "c"},
+            {"c", "d", "h", "c", "d", "c", "d"},
+            {"c", "d", "h", "c", "d", "c", "h"},
+            {"c", "d", "h", "c", "d", "c", "s"},
+            {"c", "d", "h", "c", "d", "d", "c"},
+            {"c", "d", "h", "c", "d", "d", "d"},
+            {"c", "d", "h", "c", "d", "d", "h"},
+            {"c", "d", "h", "c", "d", "d", "s"},
+            {"c", "d", "h", "c", "d", "h", "c"},
+            {"c", "d", "h", "c", "d", "h", "d"},
+            {"c", "d", "h", "c", "d", "h", "h"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "d", "s", "c"},
+            {"c", "d", "h", "c", "d", "s", "d"},
+            {"c", "d", "h", "c", "d", "s", "h"},
+            {"c", "d", "h", "c", "d", "s", "s"},
+            {"c", "d", "h", "c", "s", "c", "c"},
+            {"c", "d", "h", "c", "s", "c", "d"},
+            {"c", "d", "h", "c", "s", "c", "s"},
+            {"c", "d", "h", "c", "s", "d", "c"},
+            {"c", "d", "h", "c", "s", "d", "d"},
+            {"c", "d", "h", "c", "s", "d", "h"},
+            {"c", "d", "h", "c", "s", "d", "s"},
+            {"c", "d", "h", "c", "s", "s", "c"},
+            {"c", "d", "h", "c", "s", "s", "d"},
+            {"c", "d", "h", "c", "s", "s", "s"},
+            {"c", "d", "h", "s", "c", "c", "c"},
+            {"c", "d", "h", "s", "c", "c", "d"},
+            {"c", "d", "h", "s", "c", "c", "s"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "d"},
+            {"c", "d", "h", "s", "c", "d", "h"},
+            {"c", "d", "h", "s", "c", "d", "s"},
+            {"c", "d", "h", "s", "c", "s", "c"},
+            {"c", "d", "h", "s", "c", "s", "d"},
+            {"c", "d", "h", "s", "c", "s", "s"},
+            {"c", "d", "h", "s", "s", "c", "c"},
+            {"c", "d", "h", "s", "s", "c", "d"},
+            {"c", "d", "h", "s", "s", "c", "s"},
+            {"c", "d", "h", "s", "s", "s", "c"},
+            {"c", "d", "h", "s", "s", "s", "s"}
+};
+
+// (2, 2, 2, 1)
+rankPatternToSuitPatterns["2,2,2,1"] = {
+    {"c", "d", "c", "d", "c", "d", "c"},
+            {"c", "d", "c", "d", "c", "d", "h"},
+            {"c", "d", "c", "d", "c", "h", "c"},
+            {"c", "d", "c", "d", "c", "h", "d"},
+            {"c", "d", "c", "d", "c", "h", "h"},
+            {"c", "d", "c", "d", "c", "h", "s"},
+            {"c", "d", "c", "d", "h", "s", "c"},
+            {"c", "d", "c", "d", "h", "s", "h"},
+            {"c", "d", "c", "h", "c", "d", "c"},
+            {"c", "d", "c", "h", "c", "d", "d"},
+            {"c", "d", "c", "h", "c", "d", "h"},
+            {"c", "d", "c", "h", "c", "d", "s"},
+            {"c", "d", "c", "h", "c", "h", "c"},
+            {"c", "d", "c", "h", "c", "h", "d"},
+            {"c", "d", "c", "h", "c", "h", "h"},
+            {"c", "d", "c", "h", "c", "h", "s"},
+            {"c", "d", "c", "h", "c", "s", "c"},
+            {"c", "d", "c", "h", "c", "s", "d"},
+            {"c", "d", "c", "h", "c", "s", "h"},
+            {"c", "d", "c", "h", "c", "s", "s"},
+            {"c", "d", "c", "h", "d", "h", "c"},
+            {"c", "d", "c", "h", "d", "h", "d"},
+            {"c", "d", "c", "h", "d", "h", "h"},
+            {"c", "d", "c", "h", "d", "h", "s"},
+            {"c", "d", "c", "h", "d", "s", "c"},
+            {"c", "d", "c", "h", "d", "s", "d"},
+            {"c", "d", "c", "h", "d", "s", "h"},
+            {"c", "d", "c", "h", "d", "s", "s"},
+            {"c", "d", "c", "h", "h", "s", "c"},
+            {"c", "d", "c", "h", "h", "s", "d"},
+            {"c", "d", "c", "h", "h", "s", "h"},
+            {"c", "d", "c", "h", "h", "s", "s"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "h"},
+            {"c", "d", "h", "s", "c", "h", "c"},
+            {"c", "d", "h", "s", "c", "h", "d"},
+            {"c", "d", "h", "s", "c", "h", "h"},
+            {"c", "d", "h", "s", "c", "h", "s"},
+            {"c", "d", "h", "s", "h", "s", "c"},
+            {"c", "d", "h", "s", "h", "s", "h"}
+};
+
+// (2, 2, 1, 1, 1)
+rankPatternToSuitPatterns["2,2,1,1,1"] = {
+    {"c", "d", "c", "d", "c", "c", "c"},
+            {"c", "d", "c", "d", "c", "c", "d"},
+            {"c", "d", "c", "d", "c", "c", "h"},
+            {"c", "d", "c", "d", "c", "d", "c"},
+            {"c", "d", "c", "d", "c", "d", "d"},
+            {"c", "d", "c", "d", "c", "d", "h"},
+            {"c", "d", "c", "d", "c", "h", "c"},
+            {"c", "d", "c", "d", "c", "h", "d"},
+            {"c", "d", "c", "d", "c", "h", "h"},
+            {"c", "d", "c", "d", "c", "h", "s"},
+            {"c", "d", "c", "d", "h", "c", "c"},
+            {"c", "d", "c", "d", "h", "c", "d"},
+            {"c", "d", "c", "d", "h", "c", "h"},
+            {"c", "d", "c", "d", "h", "c", "s"},
+            {"c", "d", "c", "d", "h", "h", "c"},
+            {"c", "d", "c", "d", "h", "h", "h"},
+            {"c", "d", "c", "d", "h", "h", "s"},
+            {"c", "d", "c", "d", "h", "s", "c"},
+            {"c", "d", "c", "d", "h", "s", "h"},
+            {"c", "d", "c", "d", "h", "s", "s"},
+            {"c", "d", "c", "h", "c", "c", "c"},
+            {"c", "d", "c", "h", "c", "c", "d"},
+            {"c", "d", "c", "h", "c", "c", "h"},
+            {"c", "d", "c", "h", "c", "c", "s"},
+            {"c", "d", "c", "h", "c", "d", "c"},
+            {"c", "d", "c", "h", "c", "d", "d"},
+            {"c", "d", "c", "h", "c", "d", "h"},
+            {"c", "d", "c", "h", "c", "d", "s"},
+            {"c", "d", "c", "h", "c", "h", "c"},
+            {"c", "d", "c", "h", "c", "h", "d"},
+            {"c", "d", "c", "h", "c", "h", "h"},
+            {"c", "d", "c", "h", "c", "h", "s"},
+            {"c", "d", "c", "h", "c", "s", "c"},
+            {"c", "d", "c", "h", "c", "s", "d"},
+            {"c", "d", "c", "h", "c", "s", "h"},
+            {"c", "d", "c", "h", "c", "s", "s"},
+            {"c", "d", "c", "h", "d", "c", "c"},
+            {"c", "d", "c", "h", "d", "c", "d"},
+            {"c", "d", "c", "h", "d", "c", "h"},
+            {"c", "d", "c", "h", "d", "c", "s"},
+            {"c", "d", "c", "h", "d", "d", "c"},
+            {"c", "d", "c", "h", "d", "d", "d"},
+            {"c", "d", "c", "h", "d", "d", "h"},
+            {"c", "d", "c", "h", "d", "d", "s"},
+            {"c", "d", "c", "h", "d", "h", "c"},
+            {"c", "d", "c", "h", "d", "h", "d"},
+            {"c", "d", "c", "h", "d", "h", "h"},
+            {"c", "d", "c", "h", "d", "h", "s"},
+            {"c", "d", "c", "h", "d", "s", "c"},
+            {"c", "d", "c", "h", "d", "s", "d"},
+            {"c", "d", "c", "h", "d", "s", "h"},
+            {"c", "d", "c", "h", "d", "s", "s"},
+            {"c", "d", "c", "h", "h", "c", "c"},
+            {"c", "d", "c", "h", "h", "c", "d"},
+            {"c", "d", "c", "h", "h", "c", "h"},
+            {"c", "d", "c", "h", "h", "c", "s"},
+            {"c", "d", "c", "h", "h", "d", "c"},
+            {"c", "d", "c", "h", "h", "d", "d"},
+            {"c", "d", "c", "h", "h", "d", "h"},
+            {"c", "d", "c", "h", "h", "d", "s"},
+            {"c", "d", "c", "h", "h", "h", "c"},
+            {"c", "d", "c", "h", "h", "h", "d"},
+            {"c", "d", "c", "h", "h", "h", "h"},
+            {"c", "d", "c", "h", "h", "h", "s"},
+            {"c", "d", "c", "h", "h", "s", "c"},
+            {"c", "d", "c", "h", "h", "s", "d"},
+            {"c", "d", "c", "h", "h", "s", "h"},
+            {"c", "d", "c", "h", "h", "s", "s"},
+            {"c", "d", "c", "h", "s", "c", "c"},
+            {"c", "d", "c", "h", "s", "c", "d"},
+            {"c", "d", "c", "h", "s", "c", "h"},
+            {"c", "d", "c", "h", "s", "c", "s"},
+            {"c", "d", "c", "h", "s", "d", "c"},
+            {"c", "d", "c", "h", "s", "d", "d"},
+            {"c", "d", "c", "h", "s", "d", "h"},
+            {"c", "d", "c", "h", "s", "d", "s"},
+            {"c", "d", "c", "h", "s", "h", "c"},
+            {"c", "d", "c", "h", "s", "h", "d"},
+            {"c", "d", "c", "h", "s", "h", "h"},
+            {"c", "d", "c", "h", "s", "h", "s"},
+            {"c", "d", "c", "h", "s", "s", "c"},
+            {"c", "d", "c", "h", "s", "s", "d"},
+            {"c", "d", "c", "h", "s", "s", "h"},
+            {"c", "d", "c", "h", "s", "s", "s"},
+            {"c", "d", "h", "s", "c", "c", "c"},
+            {"c", "d", "h", "s", "c", "c", "d"},
+            {"c", "d", "h", "s", "c", "c", "h"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "d"},
+            {"c", "d", "h", "s", "c", "d", "h"},
+            {"c", "d", "h", "s", "c", "h", "c"},
+            {"c", "d", "h", "s", "c", "h", "d"},
+            {"c", "d", "h", "s", "c", "h", "h"},
+            {"c", "d", "h", "s", "c", "h", "s"},
+            {"c", "d", "h", "s", "h", "c", "c"},
+            {"c", "d", "h", "s", "h", "c", "d"},
+            {"c", "d", "h", "s", "h", "c", "h"},
+            {"c", "d", "h", "s", "h", "c", "s"},
+            {"c", "d", "h", "s", "h", "h", "c"},
+            {"c", "d", "h", "s", "h", "h", "h"},
+            {"c", "d", "h", "s", "h", "h", "s"},
+            {"c", "d", "h", "s", "h", "s", "c"},
+            {"c", "d", "h", "s", "h", "s", "h"},
+            {"c", "d", "h", "s", "h", "s", "s"}
+};
+
+// (2, 1, 1, 1, 1, 1)
+rankPatternToSuitPatterns["2,1,1,1,1,1"] = {
+    {"c", "d", "c", "c", "c", "c", "c"},
+            {"c", "d", "c", "c", "c", "c", "d"},
+            {"c", "d", "c", "c", "c", "c", "h"},
+            {"c", "d", "c", "c", "c", "d", "c"},
+            {"c", "d", "c", "c", "c", "d", "d"},
+            {"c", "d", "c", "c", "c", "d", "h"},
+            {"c", "d", "c", "c", "c", "h", "c"},
+            {"c", "d", "c", "c", "c", "h", "d"},
+            {"c", "d", "c", "c", "c", "h", "h"},
+            {"c", "d", "c", "c", "c", "h", "s"},
+            {"c", "d", "c", "c", "d", "c", "c"},
+            {"c", "d", "c", "c", "d", "c", "d"},
+            {"c", "d", "c", "c", "d", "c", "h"},
+            {"c", "d", "c", "c", "d", "d", "c"},
+            {"c", "d", "c", "c", "d", "d", "d"},
+            {"c", "d", "c", "c", "d", "d", "h"},
+            {"c", "d", "c", "c", "d", "h", "c"},
+            {"c", "d", "c", "c", "d", "h", "d"},
+            {"c", "d", "c", "c", "d", "h", "h"},
+            {"c", "d", "c", "c", "d", "h", "s"},
+            {"c", "d", "c", "c", "h", "c", "c"},
+            {"c", "d", "c", "c", "h", "c", "d"},
+            {"c", "d", "c", "c", "h", "c", "h"},
+            {"c", "d", "c", "c", "h", "c", "s"},
+            {"c", "d", "c", "c", "h", "d", "c"},
+            {"c", "d", "c", "c", "h", "d", "d"},
+            {"c", "d", "c", "c", "h", "d", "h"},
+            {"c", "d", "c", "c", "h", "d", "s"},
+            {"c", "d", "c", "c", "h", "h", "c"},
+            {"c", "d", "c", "c", "h", "h", "d"},
+            {"c", "d", "c", "c", "h", "h", "h"},
+            {"c", "d", "c", "c", "h", "h", "s"},
+            {"c", "d", "c", "c", "h", "s", "c"},
+            {"c", "d", "c", "c", "h", "s", "d"},
+            {"c", "d", "c", "c", "h", "s", "h"},
+            {"c", "d", "c", "c", "h", "s", "s"},
+            {"c", "d", "c", "d", "c", "c", "c"},
+            {"c", "d", "c", "d", "c", "c", "d"},
+            {"c", "d", "c", "d", "c", "c", "h"},
+            {"c", "d", "c", "d", "c", "d", "c"},
+            {"c", "d", "c", "d", "c", "d", "d"},
+            {"c", "d", "c", "d", "c", "d", "h"},
+            {"c", "d", "c", "d", "c", "h", "c"},
+            {"c", "d", "c", "d", "c", "h", "d"},
+            {"c", "d", "c", "d", "c", "h", "h"},
+            {"c", "d", "c", "d", "c", "h", "s"},
+            {"c", "d", "c", "d", "d", "c", "c"},
+            {"c", "d", "c", "d", "d", "c", "d"},
+            {"c", "d", "c", "d", "d", "c", "h"},
+            {"c", "d", "c", "d", "d", "d", "c"},
+            {"c", "d", "c", "d", "d", "d", "d"},
+            {"c", "d", "c", "d", "d", "d", "h"},
+            {"c", "d", "c", "d", "d", "h", "c"},
+            {"c", "d", "c", "d", "d", "h", "d"},
+            {"c", "d", "c", "d", "d", "h", "h"},
+            {"c", "d", "c", "d", "d", "h", "s"},
+            {"c", "d", "c", "d", "h", "c", "c"},
+            {"c", "d", "c", "d", "h", "c", "d"},
+            {"c", "d", "c", "d", "h", "c", "h"},
+            {"c", "d", "c", "d", "h", "c", "s"},
+            {"c", "d", "c", "d", "h", "d", "c"},
+            {"c", "d", "c", "d", "h", "d", "d"},
+            {"c", "d", "c", "d", "h", "d", "h"},
+            {"c", "d", "c", "d", "h", "d", "s"},
+            {"c", "d", "c", "d", "h", "h", "c"},
+            {"c", "d", "c", "d", "h", "h", "d"},
+            {"c", "d", "c", "d", "h", "h", "h"},
+            {"c", "d", "c", "d", "h", "h", "s"},
+            {"c", "d", "c", "d", "h", "s", "c"},
+            {"c", "d", "c", "d", "h", "s", "d"},
+            {"c", "d", "c", "d", "h", "s", "h"},
+            {"c", "d", "c", "d", "h", "s", "s"},
+            {"c", "d", "c", "h", "c", "c", "c"},
+            {"c", "d", "c", "h", "c", "c", "d"},
+            {"c", "d", "c", "h", "c", "c", "h"},
+            {"c", "d", "c", "h", "c", "c", "s"},
+            {"c", "d", "c", "h", "c", "d", "c"},
+            {"c", "d", "c", "h", "c", "d", "d"},
+            {"c", "d", "c", "h", "c", "d", "h"},
+            {"c", "d", "c", "h", "c", "d", "s"},
+            {"c", "d", "c", "h", "c", "h", "c"},
+            {"c", "d", "c", "h", "c", "h", "d"},
+            {"c", "d", "c", "h", "c", "h", "h"},
+            {"c", "d", "c", "h", "c", "h", "s"},
+            {"c", "d", "c", "h", "c", "s", "c"},
+            {"c", "d", "c", "h", "c", "s", "d"},
+            {"c", "d", "c", "h", "c", "s", "h"},
+            {"c", "d", "c", "h", "c", "s", "s"},
+            {"c", "d", "c", "h", "d", "c", "c"},
+            {"c", "d", "c", "h", "d", "c", "d"},
+            {"c", "d", "c", "h", "d", "c", "h"},
+            {"c", "d", "c", "h", "d", "c", "s"},
+            {"c", "d", "c", "h", "d", "d", "c"},
+            {"c", "d", "c", "h", "d", "d", "d"},
+            {"c", "d", "c", "h", "d", "d", "h"},
+            {"c", "d", "c", "h", "d", "d", "s"},
+            {"c", "d", "c", "h", "d", "h", "c"},
+            {"c", "d", "c", "h", "d", "h", "d"},
+            {"c", "d", "c", "h", "d", "h", "h"},
+            {"c", "d", "c", "h", "d", "h", "s"},
+            {"c", "d", "c", "h", "d", "s", "c"},
+            {"c", "d", "c", "h", "d", "s", "d"},
+            {"c", "d", "c", "h", "d", "s", "h"},
+            {"c", "d", "c", "h", "d", "s", "s"},
+            {"c", "d", "c", "h", "h", "c", "c"},
+            {"c", "d", "c", "h", "h", "c", "d"},
+            {"c", "d", "c", "h", "h", "c", "h"},
+            {"c", "d", "c", "h", "h", "c", "s"},
+            {"c", "d", "c", "h", "h", "d", "c"},
+            {"c", "d", "c", "h", "h", "d", "d"},
+            {"c", "d", "c", "h", "h", "d", "h"},
+            {"c", "d", "c", "h", "h", "d", "s"},
+            {"c", "d", "c", "h", "h", "h", "c"},
+            {"c", "d", "c", "h", "h", "h", "d"},
+            {"c", "d", "c", "h", "h", "h", "h"},
+            {"c", "d", "c", "h", "h", "h", "s"},
+            {"c", "d", "c", "h", "h", "s", "c"},
+            {"c", "d", "c", "h", "h", "s", "d"},
+            {"c", "d", "c", "h", "h", "s", "h"},
+            {"c", "d", "c", "h", "h", "s", "s"},
+            {"c", "d", "c", "h", "s", "c", "c"},
+            {"c", "d", "c", "h", "s", "c", "d"},
+            {"c", "d", "c", "h", "s", "c", "h"},
+            {"c", "d", "c", "h", "s", "c", "s"},
+            {"c", "d", "c", "h", "s", "d", "c"},
+            {"c", "d", "c", "h", "s", "d", "d"},
+            {"c", "d", "c", "h", "s", "d", "h"},
+            {"c", "d", "c", "h", "s", "d", "s"},
+            {"c", "d", "c", "h", "s", "h", "c"},
+            {"c", "d", "c", "h", "s", "h", "d"},
+            {"c", "d", "c", "h", "s", "h", "h"},
+            {"c", "d", "c", "h", "s", "h", "s"},
+            {"c", "d", "c", "h", "s", "s", "c"},
+            {"c", "d", "c", "h", "s", "s", "d"},
+            {"c", "d", "c", "h", "s", "s", "h"},
+            {"c", "d", "c", "h", "s", "s", "s"},
+            {"c", "d", "h", "c", "c", "c", "c"},
+            {"c", "d", "h", "c", "c", "c", "d"},
+            {"c", "d", "h", "c", "c", "c", "h"},
+            {"c", "d", "h", "c", "c", "c", "s"},
+            {"c", "d", "h", "c", "c", "d", "c"},
+            {"c", "d", "h", "c", "c", "d", "d"},
+            {"c", "d", "h", "c", "c", "d", "h"},
+            {"c", "d", "h", "c", "c", "d", "s"},
+            {"c", "d", "h", "c", "c", "h", "c"},
+            {"c", "d", "h", "c", "c", "h", "d"},
+            {"c", "d", "h", "c", "c", "h", "h"},
+            {"c", "d", "h", "c", "c", "h", "s"},
+            {"c", "d", "h", "c", "c", "s", "c"},
+            {"c", "d", "h", "c", "c", "s", "d"},
+            {"c", "d", "h", "c", "c", "s", "h"},
+            {"c", "d", "h", "c", "c", "s", "s"},
+            {"c", "d", "h", "c", "d", "c", "c"},
+            {"c", "d", "h", "c", "d", "c", "d"},
+            {"c", "d", "h", "c", "d", "c", "h"},
+            {"c", "d", "h", "c", "d", "c", "s"},
+            {"c", "d", "h", "c", "d", "d", "c"},
+            {"c", "d", "h", "c", "d", "d", "d"},
+            {"c", "d", "h", "c", "d", "d", "h"},
+            {"c", "d", "h", "c", "d", "d", "s"},
+            {"c", "d", "h", "c", "d", "h", "c"},
+            {"c", "d", "h", "c", "d", "h", "d"},
+            {"c", "d", "h", "c", "d", "h", "h"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "d", "s", "c"},
+            {"c", "d", "h", "c", "d", "s", "d"},
+            {"c", "d", "h", "c", "d", "s", "h"},
+            {"c", "d", "h", "c", "d", "s", "s"},
+            {"c", "d", "h", "c", "h", "c", "c"},
+            {"c", "d", "h", "c", "h", "c", "d"},
+            {"c", "d", "h", "c", "h", "c", "h"},
+            {"c", "d", "h", "c", "h", "c", "s"},
+            {"c", "d", "h", "c", "h", "d", "c"},
+            {"c", "d", "h", "c", "h", "d", "d"},
+            {"c", "d", "h", "c", "h", "d", "h"},
+            {"c", "d", "h", "c", "h", "d", "s"},
+            {"c", "d", "h", "c", "h", "h", "c"},
+            {"c", "d", "h", "c", "h", "h", "d"},
+            {"c", "d", "h", "c", "h", "h", "h"},
+            {"c", "d", "h", "c", "h", "h", "s"},
+            {"c", "d", "h", "c", "h", "s", "c"},
+            {"c", "d", "h", "c", "h", "s", "d"},
+            {"c", "d", "h", "c", "h", "s", "h"},
+            {"c", "d", "h", "c", "h", "s", "s"},
+            {"c", "d", "h", "c", "s", "c", "c"},
+            {"c", "d", "h", "c", "s", "c", "d"},
+            {"c", "d", "h", "c", "s", "c", "h"},
+            {"c", "d", "h", "c", "s", "c", "s"},
+            {"c", "d", "h", "c", "s", "d", "c"},
+            {"c", "d", "h", "c", "s", "d", "d"},
+            {"c", "d", "h", "c", "s", "d", "h"},
+            {"c", "d", "h", "c", "s", "d", "s"},
+            {"c", "d", "h", "c", "s", "h", "c"},
+            {"c", "d", "h", "c", "s", "h", "d"},
+            {"c", "d", "h", "c", "s", "h", "h"},
+            {"c", "d", "h", "c", "s", "h", "s"},
+            {"c", "d", "h", "c", "s", "s", "c"},
+            {"c", "d", "h", "c", "s", "s", "d"},
+            {"c", "d", "h", "c", "s", "s", "h"},
+            {"c", "d", "h", "c", "s", "s", "s"},
+            {"c", "d", "h", "h", "c", "c", "c"},
+            {"c", "d", "h", "h", "c", "c", "d"},
+            {"c", "d", "h", "h", "c", "c", "h"},
+            {"c", "d", "h", "h", "c", "c", "s"},
+            {"c", "d", "h", "h", "c", "d", "c"},
+            {"c", "d", "h", "h", "c", "d", "d"},
+            {"c", "d", "h", "h", "c", "d", "h"},
+            {"c", "d", "h", "h", "c", "d", "s"},
+            {"c", "d", "h", "h", "c", "h", "c"},
+            {"c", "d", "h", "h", "c", "h", "d"},
+            {"c", "d", "h", "h", "c", "h", "h"},
+            {"c", "d", "h", "h", "c", "h", "s"},
+            {"c", "d", "h", "h", "c", "s", "c"},
+            {"c", "d", "h", "h", "c", "s", "d"},
+            {"c", "d", "h", "h", "c", "s", "h"},
+            {"c", "d", "h", "h", "c", "s", "s"},
+            {"c", "d", "h", "h", "h", "c", "c"},
+            {"c", "d", "h", "h", "h", "c", "d"},
+            {"c", "d", "h", "h", "h", "c", "h"},
+            {"c", "d", "h", "h", "h", "c", "s"},
+            {"c", "d", "h", "h", "h", "h", "c"},
+            {"c", "d", "h", "h", "h", "h", "h"},
+            {"c", "d", "h", "h", "h", "h", "s"},
+            {"c", "d", "h", "h", "h", "s", "c"},
+            {"c", "d", "h", "h", "h", "s", "h"},
+            {"c", "d", "h", "h", "h", "s", "s"},
+            {"c", "d", "h", "h", "s", "c", "c"},
+            {"c", "d", "h", "h", "s", "c", "d"},
+            {"c", "d", "h", "h", "s", "c", "h"},
+            {"c", "d", "h", "h", "s", "c", "s"},
+            {"c", "d", "h", "h", "s", "h", "c"},
+            {"c", "d", "h", "h", "s", "h", "h"},
+            {"c", "d", "h", "h", "s", "h", "s"},
+            {"c", "d", "h", "h", "s", "s", "c"},
+            {"c", "d", "h", "h", "s", "s", "h"},
+            {"c", "d", "h", "h", "s", "s", "s"},
+            {"c", "d", "h", "s", "c", "c", "c"},
+            {"c", "d", "h", "s", "c", "c", "d"},
+            {"c", "d", "h", "s", "c", "c", "h"},
+            {"c", "d", "h", "s", "c", "c", "s"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "d"},
+            {"c", "d", "h", "s", "c", "d", "h"},
+            {"c", "d", "h", "s", "c", "d", "s"},
+            {"c", "d", "h", "s", "c", "h", "c"},
+            {"c", "d", "h", "s", "c", "h", "d"},
+            {"c", "d", "h", "s", "c", "h", "h"},
+            {"c", "d", "h", "s", "c", "h", "s"},
+            {"c", "d", "h", "s", "c", "s", "c"},
+            {"c", "d", "h", "s", "c", "s", "d"},
+            {"c", "d", "h", "s", "c", "s", "h"},
+            {"c", "d", "h", "s", "c", "s", "s"},
+            {"c", "d", "h", "s", "h", "c", "c"},
+            {"c", "d", "h", "s", "h", "c", "d"},
+            {"c", "d", "h", "s", "h", "c", "h"},
+            {"c", "d", "h", "s", "h", "c", "s"},
+            {"c", "d", "h", "s", "h", "h", "c"},
+            {"c", "d", "h", "s", "h", "h", "h"},
+            {"c", "d", "h", "s", "h", "h", "s"},
+            {"c", "d", "h", "s", "h", "s", "c"},
+            {"c", "d", "h", "s", "h", "s", "h"},
+            {"c", "d", "h", "s", "h", "s", "s"},
+            {"c", "d", "h", "s", "s", "c", "c"},
+            {"c", "d", "h", "s", "s", "c", "d"},
+            {"c", "d", "h", "s", "s", "c", "h"},
+            {"c", "d", "h", "s", "s", "c", "s"},
+            {"c", "d", "h", "s", "s", "h", "c"},
+            {"c", "d", "h", "s", "s", "h", "h"},
+            {"c", "d", "h", "s", "s", "h", "s"},
+            {"c", "d", "h", "s", "s", "s", "c"},
+            {"c", "d", "h", "s", "s", "s", "h"},
+            {"c", "d", "h", "s", "s", "s", "s"}
+};
+
+// (1, 1, 1, 1, 1, 1, 1)
+rankPatternToSuitPatterns["1,1,1,1,1,1,1"] = {
+    {"c", "c", "c", "c", "c", "c", "c"},
+            {"c", "c", "c", "c", "c", "c", "d"},
+            {"c", "c", "c", "c", "c", "d", "c"},
+            {"c", "c", "c", "c", "c", "d", "d"},
+            {"c", "c", "c", "c", "c", "d", "h"},
+            {"c", "c", "c", "c", "d", "c", "c"},
+            {"c", "c", "c", "c", "d", "c", "d"},
+            {"c", "c", "c", "c", "d", "c", "h"},
+            {"c", "c", "c", "c", "d", "d", "c"},
+            {"c", "c", "c", "c", "d", "d", "d"},
+            {"c", "c", "c", "c", "d", "d", "h"},
+            {"c", "c", "c", "c", "d", "h", "c"},
+            {"c", "c", "c", "c", "d", "h", "d"},
+            {"c", "c", "c", "c", "d", "h", "h"},
+            {"c", "c", "c", "c", "d", "h", "s"},
+            {"c", "c", "c", "d", "c", "c", "c"},
+            {"c", "c", "c", "d", "c", "c", "d"},
+            {"c", "c", "c", "d", "c", "c", "h"},
+            {"c", "c", "c", "d", "c", "d", "c"},
+            {"c", "c", "c", "d", "c", "d", "d"},
+            {"c", "c", "c", "d", "c", "d", "h"},
+            {"c", "c", "c", "d", "c", "h", "c"},
+            {"c", "c", "c", "d", "c", "h", "d"},
+            {"c", "c", "c", "d", "c", "h", "h"},
+            {"c", "c", "c", "d", "c", "h", "s"},
+            {"c", "c", "c", "d", "d", "c", "c"},
+            {"c", "c", "c", "d", "d", "c", "d"},
+            {"c", "c", "c", "d", "d", "c", "h"},
+            {"c", "c", "c", "d", "d", "d", "c"},
+            {"c", "c", "c", "d", "d", "d", "d"},
+            {"c", "c", "c", "d", "d", "d", "h"},
+            {"c", "c", "c", "d", "d", "h", "c"},
+            {"c", "c", "c", "d", "d", "h", "d"},
+            {"c", "c", "c", "d", "d", "h", "h"},
+            {"c", "c", "c", "d", "d", "h", "s"},
+            {"c", "c", "c", "d", "h", "c", "c"},
+            {"c", "c", "c", "d", "h", "c", "d"},
+            {"c", "c", "c", "d", "h", "c", "h"},
+            {"c", "c", "c", "d", "h", "c", "s"},
+            {"c", "c", "c", "d", "h", "d", "c"},
+            {"c", "c", "c", "d", "h", "d", "d"},
+            {"c", "c", "c", "d", "h", "d", "h"},
+            {"c", "c", "c", "d", "h", "d", "s"},
+            {"c", "c", "c", "d", "h", "h", "c"},
+            {"c", "c", "c", "d", "h", "h", "d"},
+            {"c", "c", "c", "d", "h", "h", "h"},
+            {"c", "c", "c", "d", "h", "h", "s"},
+            {"c", "c", "c", "d", "h", "s", "c"},
+            {"c", "c", "c", "d", "h", "s", "d"},
+            {"c", "c", "c", "d", "h", "s", "h"},
+            {"c", "c", "c", "d", "h", "s", "s"},
+            {"c", "c", "d", "c", "c", "c", "c"},
+            {"c", "c", "d", "c", "c", "c", "d"},
+            {"c", "c", "d", "c", "c", "c", "h"},
+            {"c", "c", "d", "c", "c", "d", "c"},
+            {"c", "c", "d", "c", "c", "d", "d"},
+            {"c", "c", "d", "c", "c", "d", "h"},
+            {"c", "c", "d", "c", "c", "h", "c"},
+            {"c", "c", "d", "c", "c", "h", "d"},
+            {"c", "c", "d", "c", "c", "h", "h"},
+            {"c", "c", "d", "c", "c", "h", "s"},
+            {"c", "c", "d", "c", "d", "c", "c"},
+            {"c", "c", "d", "c", "d", "c", "d"},
+            {"c", "c", "d", "c", "d", "c", "h"},
+            {"c", "c", "d", "c", "d", "d", "c"},
+            {"c", "c", "d", "c", "d", "d", "d"},
+            {"c", "c", "d", "c", "d", "d", "h"},
+            {"c", "c", "d", "c", "d", "h", "c"},
+            {"c", "c", "d", "c", "d", "h", "d"},
+            {"c", "c", "d", "c", "d", "h", "h"},
+            {"c", "c", "d", "c", "d", "h", "s"},
+            {"c", "c", "d", "c", "h", "c", "c"},
+            {"c", "c", "d", "c", "h", "c", "d"},
+            {"c", "c", "d", "c", "h", "c", "h"},
+            {"c", "c", "d", "c", "h", "c", "s"},
+            {"c", "c", "d", "c", "h", "d", "c"},
+            {"c", "c", "d", "c", "h", "d", "d"},
+            {"c", "c", "d", "c", "h", "d", "h"},
+            {"c", "c", "d", "c", "h", "d", "s"},
+            {"c", "c", "d", "c", "h", "h", "c"},
+            {"c", "c", "d", "c", "h", "h", "d"},
+            {"c", "c", "d", "c", "h", "h", "h"},
+            {"c", "c", "d", "c", "h", "h", "s"},
+            {"c", "c", "d", "c", "h", "s", "c"},
+            {"c", "c", "d", "c", "h", "s", "d"},
+            {"c", "c", "d", "c", "h", "s", "h"},
+            {"c", "c", "d", "c", "h", "s", "s"},
+            {"c", "c", "d", "d", "c", "c", "c"},
+            {"c", "c", "d", "d", "c", "c", "d"},
+            {"c", "c", "d", "d", "c", "c", "h"},
+            {"c", "c", "d", "d", "c", "d", "c"},
+            {"c", "c", "d", "d", "c", "d", "d"},
+            {"c", "c", "d", "d", "c", "d", "h"},
+            {"c", "c", "d", "d", "c", "h", "c"},
+            {"c", "c", "d", "d", "c", "h", "d"},
+            {"c", "c", "d", "d", "c", "h", "h"},
+            {"c", "c", "d", "d", "c", "h", "s"},
+            {"c", "c", "d", "d", "d", "c", "c"},
+            {"c", "c", "d", "d", "d", "c", "d"},
+            {"c", "c", "d", "d", "d", "c", "h"},
+            {"c", "c", "d", "d", "d", "d", "c"},
+            {"c", "c", "d", "d", "d", "d", "d"},
+            {"c", "c", "d", "d", "d", "d", "h"},
+            {"c", "c", "d", "d", "d", "h", "c"},
+            {"c", "c", "d", "d", "d", "h", "d"},
+            {"c", "c", "d", "d", "d", "h", "h"},
+            {"c", "c", "d", "d", "d", "h", "s"},
+            {"c", "c", "d", "d", "h", "c", "c"},
+            {"c", "c", "d", "d", "h", "c", "d"},
+            {"c", "c", "d", "d", "h", "c", "h"},
+            {"c", "c", "d", "d", "h", "c", "s"},
+            {"c", "c", "d", "d", "h", "d", "c"},
+            {"c", "c", "d", "d", "h", "d", "d"},
+            {"c", "c", "d", "d", "h", "d", "h"},
+            {"c", "c", "d", "d", "h", "d", "s"},
+            {"c", "c", "d", "d", "h", "h", "c"},
+            {"c", "c", "d", "d", "h", "h", "d"},
+            {"c", "c", "d", "d", "h", "h", "h"},
+            {"c", "c", "d", "d", "h", "h", "s"},
+            {"c", "c", "d", "d", "h", "s", "c"},
+            {"c", "c", "d", "d", "h", "s", "d"},
+            {"c", "c", "d", "d", "h", "s", "h"},
+            {"c", "c", "d", "d", "h", "s", "s"},
+            {"c", "c", "d", "h", "c", "c", "c"},
+            {"c", "c", "d", "h", "c", "c", "d"},
+            {"c", "c", "d", "h", "c", "c", "h"},
+            {"c", "c", "d", "h", "c", "c", "s"},
+            {"c", "c", "d", "h", "c", "d", "c"},
+            {"c", "c", "d", "h", "c", "d", "d"},
+            {"c", "c", "d", "h", "c", "d", "h"},
+            {"c", "c", "d", "h", "c", "d", "s"},
+            {"c", "c", "d", "h", "c", "h", "c"},
+            {"c", "c", "d", "h", "c", "h", "d"},
+            {"c", "c", "d", "h", "c", "h", "h"},
+            {"c", "c", "d", "h", "c", "h", "s"},
+            {"c", "c", "d", "h", "c", "s", "c"},
+            {"c", "c", "d", "h", "c", "s", "d"},
+            {"c", "c", "d", "h", "c", "s", "h"},
+            {"c", "c", "d", "h", "c", "s", "s"},
+            {"c", "c", "d", "h", "d", "c", "c"},
+            {"c", "c", "d", "h", "d", "c", "d"},
+            {"c", "c", "d", "h", "d", "c", "h"},
+            {"c", "c", "d", "h", "d", "c", "s"},
+            {"c", "c", "d", "h", "d", "d", "c"},
+            {"c", "c", "d", "h", "d", "d", "d"},
+            {"c", "c", "d", "h", "d", "d", "h"},
+            {"c", "c", "d", "h", "d", "d", "s"},
+            {"c", "c", "d", "h", "d", "h", "c"},
+            {"c", "c", "d", "h", "d", "h", "d"},
+            {"c", "c", "d", "h", "d", "h", "h"},
+            {"c", "c", "d", "h", "d", "h", "s"},
+            {"c", "c", "d", "h", "d", "s", "c"},
+            {"c", "c", "d", "h", "d", "s", "d"},
+            {"c", "c", "d", "h", "d", "s", "h"},
+            {"c", "c", "d", "h", "d", "s", "s"},
+            {"c", "c", "d", "h", "h", "c", "c"},
+            {"c", "c", "d", "h", "h", "c", "d"},
+            {"c", "c", "d", "h", "h", "c", "h"},
+            {"c", "c", "d", "h", "h", "c", "s"},
+            {"c", "c", "d", "h", "h", "d", "c"},
+            {"c", "c", "d", "h", "h", "d", "d"},
+            {"c", "c", "d", "h", "h", "d", "h"},
+            {"c", "c", "d", "h", "h", "d", "s"},
+            {"c", "c", "d", "h", "h", "h", "c"},
+            {"c", "c", "d", "h", "h", "h", "d"},
+            {"c", "c", "d", "h", "h", "h", "h"},
+            {"c", "c", "d", "h", "h", "h", "s"},
+            {"c", "c", "d", "h", "h", "s", "c"},
+            {"c", "c", "d", "h", "h", "s", "d"},
+            {"c", "c", "d", "h", "h", "s", "h"},
+            {"c", "c", "d", "h", "h", "s", "s"},
+            {"c", "c", "d", "h", "s", "c", "c"},
+            {"c", "c", "d", "h", "s", "c", "d"},
+            {"c", "c", "d", "h", "s", "c", "h"},
+            {"c", "c", "d", "h", "s", "c", "s"},
+            {"c", "c", "d", "h", "s", "d", "c"},
+            {"c", "c", "d", "h", "s", "d", "d"},
+            {"c", "c", "d", "h", "s", "d", "h"},
+            {"c", "c", "d", "h", "s", "d", "s"},
+            {"c", "c", "d", "h", "s", "h", "c"},
+            {"c", "c", "d", "h", "s", "h", "d"},
+            {"c", "c", "d", "h", "s", "h", "h"},
+            {"c", "c", "d", "h", "s", "h", "s"},
+            {"c", "c", "d", "h", "s", "s", "c"},
+            {"c", "c", "d", "h", "s", "s", "d"},
+            {"c", "c", "d", "h", "s", "s", "h"},
+            {"c", "c", "d", "h", "s", "s", "s"},
+            {"c", "d", "c", "c", "c", "c", "c"},
+            {"c", "d", "c", "c", "c", "c", "d"},
+            {"c", "d", "c", "c", "c", "c", "h"},
+            {"c", "d", "c", "c", "c", "d", "c"},
+            {"c", "d", "c", "c", "c", "d", "d"},
+            {"c", "d", "c", "c", "c", "d", "h"},
+            {"c", "d", "c", "c", "c", "h", "c"},
+            {"c", "d", "c", "c", "c", "h", "d"},
+            {"c", "d", "c", "c", "c", "h", "h"},
+            {"c", "d", "c", "c", "c", "h", "s"},
+            {"c", "d", "c", "c", "d", "c", "c"},
+            {"c", "d", "c", "c", "d", "c", "d"},
+            {"c", "d", "c", "c", "d", "c", "h"},
+            {"c", "d", "c", "c", "d", "d", "c"},
+            {"c", "d", "c", "c", "d", "d", "d"},
+            {"c", "d", "c", "c", "d", "d", "h"},
+            {"c", "d", "c", "c", "d", "h", "c"},
+            {"c", "d", "c", "c", "d", "h", "d"},
+            {"c", "d", "c", "c", "d", "h", "h"},
+            {"c", "d", "c", "c", "d", "h", "s"},
+            {"c", "d", "c", "c", "h", "c", "c"},
+            {"c", "d", "c", "c", "h", "c", "d"},
+            {"c", "d", "c", "c", "h", "c", "h"},
+            {"c", "d", "c", "c", "h", "c", "s"},
+            {"c", "d", "c", "c", "h", "d", "c"},
+            {"c", "d", "c", "c", "h", "d", "d"},
+            {"c", "d", "c", "c", "h", "d", "h"},
+            {"c", "d", "c", "c", "h", "d", "s"},
+            {"c", "d", "c", "c", "h", "h", "c"},
+            {"c", "d", "c", "c", "h", "h", "d"},
+            {"c", "d", "c", "c", "h", "h", "h"},
+            {"c", "d", "c", "c", "h", "h", "s"},
+            {"c", "d", "c", "c", "h", "s", "c"},
+            {"c", "d", "c", "c", "h", "s", "d"},
+            {"c", "d", "c", "c", "h", "s", "h"},
+            {"c", "d", "c", "c", "h", "s", "s"},
+            {"c", "d", "c", "d", "c", "c", "c"},
+            {"c", "d", "c", "d", "c", "c", "d"},
+            {"c", "d", "c", "d", "c", "c", "h"},
+            {"c", "d", "c", "d", "c", "d", "c"},
+            {"c", "d", "c", "d", "c", "d", "d"},
+            {"c", "d", "c", "d", "c", "d", "h"},
+            {"c", "d", "c", "d", "c", "h", "c"},
+            {"c", "d", "c", "d", "c", "h", "d"},
+            {"c", "d", "c", "d", "c", "h", "h"},
+            {"c", "d", "c", "d", "c", "h", "s"},
+            {"c", "d", "c", "d", "d", "c", "c"},
+            {"c", "d", "c", "d", "d", "c", "d"},
+            {"c", "d", "c", "d", "d", "c", "h"},
+            {"c", "d", "c", "d", "d", "d", "c"},
+            {"c", "d", "c", "d", "d", "d", "d"},
+            {"c", "d", "c", "d", "d", "d", "h"},
+            {"c", "d", "c", "d", "d", "h", "c"},
+            {"c", "d", "c", "d", "d", "h", "d"},
+            {"c", "d", "c", "d", "d", "h", "h"},
+            {"c", "d", "c", "d", "d", "h", "s"},
+            {"c", "d", "c", "d", "h", "c", "c"},
+            {"c", "d", "c", "d", "h", "c", "d"},
+            {"c", "d", "c", "d", "h", "c", "h"},
+            {"c", "d", "c", "d", "h", "c", "s"},
+            {"c", "d", "c", "d", "h", "d", "c"},
+            {"c", "d", "c", "d", "h", "d", "d"},
+            {"c", "d", "c", "d", "h", "d", "h"},
+            {"c", "d", "c", "d", "h", "d", "s"},
+            {"c", "d", "c", "d", "h", "h", "c"},
+            {"c", "d", "c", "d", "h", "h", "d"},
+            {"c", "d", "c", "d", "h", "h", "h"},
+            {"c", "d", "c", "d", "h", "h", "s"},
+            {"c", "d", "c", "d", "h", "s", "c"},
+            {"c", "d", "c", "d", "h", "s", "d"},
+            {"c", "d", "c", "d", "h", "s", "h"},
+            {"c", "d", "c", "d", "h", "s", "s"},
+            {"c", "d", "c", "h", "c", "c", "c"},
+            {"c", "d", "c", "h", "c", "c", "d"},
+            {"c", "d", "c", "h", "c", "c", "h"},
+            {"c", "d", "c", "h", "c", "c", "s"},
+            {"c", "d", "c", "h", "c", "d", "c"},
+            {"c", "d", "c", "h", "c", "d", "d"},
+            {"c", "d", "c", "h", "c", "d", "h"},
+            {"c", "d", "c", "h", "c", "d", "s"},
+            {"c", "d", "c", "h", "c", "h", "c"},
+            {"c", "d", "c", "h", "c", "h", "d"},
+            {"c", "d", "c", "h", "c", "h", "h"},
+            {"c", "d", "c", "h", "c", "h", "s"},
+            {"c", "d", "c", "h", "c", "s", "c"},
+            {"c", "d", "c", "h", "c", "s", "d"},
+            {"c", "d", "c", "h", "c", "s", "h"},
+            {"c", "d", "c", "h", "c", "s", "s"},
+            {"c", "d", "c", "h", "d", "c", "c"},
+            {"c", "d", "c", "h", "d", "c", "d"},
+            {"c", "d", "c", "h", "d", "c", "h"},
+            {"c", "d", "c", "h", "d", "c", "s"},
+            {"c", "d", "c", "h", "d", "d", "c"},
+            {"c", "d", "c", "h", "d", "d", "d"},
+            {"c", "d", "c", "h", "d", "d", "h"},
+            {"c", "d", "c", "h", "d", "d", "s"},
+            {"c", "d", "c", "h", "d", "h", "c"},
+            {"c", "d", "c", "h", "d", "h", "d"},
+            {"c", "d", "c", "h", "d", "h", "h"},
+            {"c", "d", "c", "h", "d", "h", "s"},
+            {"c", "d", "c", "h", "d", "s", "c"},
+            {"c", "d", "c", "h", "d", "s", "d"},
+            {"c", "d", "c", "h", "d", "s", "h"},
+            {"c", "d", "c", "h", "d", "s", "s"},
+            {"c", "d", "c", "h", "h", "c", "c"},
+            {"c", "d", "c", "h", "h", "c", "d"},
+            {"c", "d", "c", "h", "h", "c", "h"},
+            {"c", "d", "c", "h", "h", "c", "s"},
+            {"c", "d", "c", "h", "h", "d", "c"},
+            {"c", "d", "c", "h", "h", "d", "d"},
+            {"c", "d", "c", "h", "h", "d", "h"},
+            {"c", "d", "c", "h", "h", "d", "s"},
+            {"c", "d", "c", "h", "h", "h", "c"},
+            {"c", "d", "c", "h", "h", "h", "d"},
+            {"c", "d", "c", "h", "h", "h", "h"},
+            {"c", "d", "c", "h", "h", "h", "s"},
+            {"c", "d", "c", "h", "h", "s", "c"},
+            {"c", "d", "c", "h", "h", "s", "d"},
+            {"c", "d", "c", "h", "h", "s", "h"},
+            {"c", "d", "c", "h", "h", "s", "s"},
+            {"c", "d", "c", "h", "s", "c", "c"},
+            {"c", "d", "c", "h", "s", "c", "d"},
+            {"c", "d", "c", "h", "s", "c", "h"},
+            {"c", "d", "c", "h", "s", "c", "s"},
+            {"c", "d", "c", "h", "s", "d", "c"},
+            {"c", "d", "c", "h", "s", "d", "d"},
+            {"c", "d", "c", "h", "s", "d", "h"},
+            {"c", "d", "c", "h", "s", "d", "s"},
+            {"c", "d", "c", "h", "s", "h", "c"},
+            {"c", "d", "c", "h", "s", "h", "d"},
+            {"c", "d", "c", "h", "s", "h", "h"},
+            {"c", "d", "c", "h", "s", "h", "s"},
+            {"c", "d", "c", "h", "s", "s", "c"},
+            {"c", "d", "c", "h", "s", "s", "d"},
+            {"c", "d", "c", "h", "s", "s", "h"},
+            {"c", "d", "c", "h", "s", "s", "s"},
+            {"c", "d", "d", "c", "c", "c", "c"},
+            {"c", "d", "d", "c", "c", "c", "d"},
+            {"c", "d", "d", "c", "c", "c", "h"},
+            {"c", "d", "d", "c", "c", "d", "c"},
+            {"c", "d", "d", "c", "c", "d", "d"},
+            {"c", "d", "d", "c", "c", "d", "h"},
+            {"c", "d", "d", "c", "c", "h", "c"},
+            {"c", "d", "d", "c", "c", "h", "d"},
+            {"c", "d", "d", "c", "c", "h", "h"},
+            {"c", "d", "d", "c", "c", "h", "s"},
+            {"c", "d", "d", "c", "d", "c", "c"},
+            {"c", "d", "d", "c", "d", "c", "d"},
+            {"c", "d", "d", "c", "d", "c", "h"},
+            {"c", "d", "d", "c", "d", "d", "c"},
+            {"c", "d", "d", "c", "d", "d", "d"},
+            {"c", "d", "d", "c", "d", "d", "h"},
+            {"c", "d", "d", "c", "d", "h", "c"},
+            {"c", "d", "d", "c", "d", "h", "d"},
+            {"c", "d", "d", "c", "d", "h", "h"},
+            {"c", "d", "d", "c", "d", "h", "s"},
+            {"c", "d", "d", "c", "h", "c", "c"},
+            {"c", "d", "d", "c", "h", "c", "d"},
+            {"c", "d", "d", "c", "h", "c", "h"},
+            {"c", "d", "d", "c", "h", "c", "s"},
+            {"c", "d", "d", "c", "h", "d", "c"},
+            {"c", "d", "d", "c", "h", "d", "d"},
+            {"c", "d", "d", "c", "h", "d", "h"},
+            {"c", "d", "d", "c", "h", "d", "s"},
+            {"c", "d", "d", "c", "h", "h", "c"},
+            {"c", "d", "d", "c", "h", "h", "d"},
+            {"c", "d", "d", "c", "h", "h", "h"},
+            {"c", "d", "d", "c", "h", "h", "s"},
+            {"c", "d", "d", "c", "h", "s", "c"},
+            {"c", "d", "d", "c", "h", "s", "d"},
+            {"c", "d", "d", "c", "h", "s", "h"},
+            {"c", "d", "d", "c", "h", "s", "s"},
+            {"c", "d", "d", "d", "c", "c", "c"},
+            {"c", "d", "d", "d", "c", "c", "d"},
+            {"c", "d", "d", "d", "c", "c", "h"},
+            {"c", "d", "d", "d", "c", "d", "c"},
+            {"c", "d", "d", "d", "c", "d", "d"},
+            {"c", "d", "d", "d", "c", "d", "h"},
+            {"c", "d", "d", "d", "c", "h", "c"},
+            {"c", "d", "d", "d", "c", "h", "d"},
+            {"c", "d", "d", "d", "c", "h", "h"},
+            {"c", "d", "d", "d", "c", "h", "s"},
+            {"c", "d", "d", "d", "d", "c", "c"},
+            {"c", "d", "d", "d", "d", "c", "d"},
+            {"c", "d", "d", "d", "d", "c", "h"},
+            {"c", "d", "d", "d", "d", "d", "c"},
+            {"c", "d", "d", "d", "d", "d", "d"},
+            {"c", "d", "d", "d", "d", "d", "h"},
+            {"c", "d", "d", "d", "d", "h", "c"},
+            {"c", "d", "d", "d", "d", "h", "d"},
+            {"c", "d", "d", "d", "d", "h", "h"},
+            {"c", "d", "d", "d", "d", "h", "s"},
+            {"c", "d", "d", "d", "h", "c", "c"},
+            {"c", "d", "d", "d", "h", "c", "d"},
+            {"c", "d", "d", "d", "h", "c", "h"},
+            {"c", "d", "d", "d", "h", "c", "s"},
+            {"c", "d", "d", "d", "h", "d", "c"},
+            {"c", "d", "d", "d", "h", "d", "d"},
+            {"c", "d", "d", "d", "h", "d", "h"},
+            {"c", "d", "d", "d", "h", "d", "s"},
+            {"c", "d", "d", "d", "h", "h", "c"},
+            {"c", "d", "d", "d", "h", "h", "d"},
+            {"c", "d", "d", "d", "h", "h", "h"},
+            {"c", "d", "d", "d", "h", "h", "s"},
+            {"c", "d", "d", "d", "h", "s", "c"},
+            {"c", "d", "d", "d", "h", "s", "d"},
+            {"c", "d", "d", "d", "h", "s", "h"},
+            {"c", "d", "d", "d", "h", "s", "s"},
+            {"c", "d", "d", "h", "c", "c", "c"},
+            {"c", "d", "d", "h", "c", "c", "d"},
+            {"c", "d", "d", "h", "c", "c", "h"},
+            {"c", "d", "d", "h", "c", "c", "s"},
+            {"c", "d", "d", "h", "c", "d", "c"},
+            {"c", "d", "d", "h", "c", "d", "d"},
+            {"c", "d", "d", "h", "c", "d", "h"},
+            {"c", "d", "d", "h", "c", "d", "s"},
+            {"c", "d", "d", "h", "c", "h", "c"},
+            {"c", "d", "d", "h", "c", "h", "d"},
+            {"c", "d", "d", "h", "c", "h", "h"},
+            {"c", "d", "d", "h", "c", "h", "s"},
+            {"c", "d", "d", "h", "c", "s", "c"},
+            {"c", "d", "d", "h", "c", "s", "d"},
+            {"c", "d", "d", "h", "c", "s", "h"},
+            {"c", "d", "d", "h", "c", "s", "s"},
+            {"c", "d", "d", "h", "d", "c", "c"},
+            {"c", "d", "d", "h", "d", "c", "d"},
+            {"c", "d", "d", "h", "d", "c", "h"},
+            {"c", "d", "d", "h", "d", "c", "s"},
+            {"c", "d", "d", "h", "d", "d", "c"},
+            {"c", "d", "d", "h", "d", "d", "d"},
+            {"c", "d", "d", "h", "d", "d", "h"},
+            {"c", "d", "d", "h", "d", "d", "s"},
+            {"c", "d", "d", "h", "d", "h", "c"},
+            {"c", "d", "d", "h", "d", "h", "d"},
+            {"c", "d", "d", "h", "d", "h", "h"},
+            {"c", "d", "d", "h", "d", "h", "s"},
+            {"c", "d", "d", "h", "d", "s", "c"},
+            {"c", "d", "d", "h", "d", "s", "d"},
+            {"c", "d", "d", "h", "d", "s", "h"},
+            {"c", "d", "d", "h", "d", "s", "s"},
+            {"c", "d", "d", "h", "h", "c", "c"},
+            {"c", "d", "d", "h", "h", "c", "d"},
+            {"c", "d", "d", "h", "h", "c", "h"},
+            {"c", "d", "d", "h", "h", "c", "s"},
+            {"c", "d", "d", "h", "h", "d", "c"},
+            {"c", "d", "d", "h", "h", "d", "d"},
+            {"c", "d", "d", "h", "h", "d", "h"},
+            {"c", "d", "d", "h", "h", "d", "s"},
+            {"c", "d", "d", "h", "h", "h", "c"},
+            {"c", "d", "d", "h", "h", "h", "d"},
+            {"c", "d", "d", "h", "h", "h", "h"},
+            {"c", "d", "d", "h", "h", "h", "s"},
+            {"c", "d", "d", "h", "h", "s", "c"},
+            {"c", "d", "d", "h", "h", "s", "d"},
+            {"c", "d", "d", "h", "h", "s", "h"},
+            {"c", "d", "d", "h", "h", "s", "s"},
+            {"c", "d", "d", "h", "s", "c", "c"},
+            {"c", "d", "d", "h", "s", "c", "d"},
+            {"c", "d", "d", "h", "s", "c", "h"},
+            {"c", "d", "d", "h", "s", "c", "s"},
+            {"c", "d", "d", "h", "s", "d", "c"},
+            {"c", "d", "d", "h", "s", "d", "d"},
+            {"c", "d", "d", "h", "s", "d", "h"},
+            {"c", "d", "d", "h", "s", "d", "s"},
+            {"c", "d", "d", "h", "s", "h", "c"},
+            {"c", "d", "d", "h", "s", "h", "d"},
+            {"c", "d", "d", "h", "s", "h", "h"},
+            {"c", "d", "d", "h", "s", "h", "s"},
+            {"c", "d", "d", "h", "s", "s", "c"},
+            {"c", "d", "d", "h", "s", "s", "d"},
+            {"c", "d", "d", "h", "s", "s", "h"},
+            {"c", "d", "d", "h", "s", "s", "s"},
+            {"c", "d", "h", "c", "c", "c", "c"},
+            {"c", "d", "h", "c", "c", "c", "d"},
+            {"c", "d", "h", "c", "c", "c", "h"},
+            {"c", "d", "h", "c", "c", "c", "s"},
+            {"c", "d", "h", "c", "c", "d", "c"},
+            {"c", "d", "h", "c", "c", "d", "d"},
+            {"c", "d", "h", "c", "c", "d", "h"},
+            {"c", "d", "h", "c", "c", "d", "s"},
+            {"c", "d", "h", "c", "c", "h", "c"},
+            {"c", "d", "h", "c", "c", "h", "d"},
+            {"c", "d", "h", "c", "c", "h", "h"},
+            {"c", "d", "h", "c", "c", "h", "s"},
+            {"c", "d", "h", "c", "c", "s", "c"},
+            {"c", "d", "h", "c", "c", "s", "d"},
+            {"c", "d", "h", "c", "c", "s", "h"},
+            {"c", "d", "h", "c", "c", "s", "s"},
+            {"c", "d", "h", "c", "d", "c", "c"},
+            {"c", "d", "h", "c", "d", "c", "d"},
+            {"c", "d", "h", "c", "d", "c", "h"},
+            {"c", "d", "h", "c", "d", "c", "s"},
+            {"c", "d", "h", "c", "d", "d", "c"},
+            {"c", "d", "h", "c", "d", "d", "d"},
+            {"c", "d", "h", "c", "d", "d", "h"},
+            {"c", "d", "h", "c", "d", "d", "s"},
+            {"c", "d", "h", "c", "d", "h", "c"},
+            {"c", "d", "h", "c", "d", "h", "d"},
+            {"c", "d", "h", "c", "d", "h", "h"},
+            {"c", "d", "h", "c", "d", "h", "s"},
+            {"c", "d", "h", "c", "d", "s", "c"},
+            {"c", "d", "h", "c", "d", "s", "d"},
+            {"c", "d", "h", "c", "d", "s", "h"},
+            {"c", "d", "h", "c", "d", "s", "s"},
+            {"c", "d", "h", "c", "h", "c", "c"},
+            {"c", "d", "h", "c", "h", "c", "d"},
+            {"c", "d", "h", "c", "h", "c", "h"},
+            {"c", "d", "h", "c", "h", "c", "s"},
+            {"c", "d", "h", "c", "h", "d", "c"},
+            {"c", "d", "h", "c", "h", "d", "d"},
+            {"c", "d", "h", "c", "h", "d", "h"},
+            {"c", "d", "h", "c", "h", "d", "s"},
+            {"c", "d", "h", "c", "h", "h", "c"},
+            {"c", "d", "h", "c", "h", "h", "d"},
+            {"c", "d", "h", "c", "h", "h", "h"},
+            {"c", "d", "h", "c", "h", "h", "s"},
+            {"c", "d", "h", "c", "h", "s", "c"},
+            {"c", "d", "h", "c", "h", "s", "d"},
+            {"c", "d", "h", "c", "h", "s", "h"},
+            {"c", "d", "h", "c", "h", "s", "s"},
+            {"c", "d", "h", "c", "s", "c", "c"},
+            {"c", "d", "h", "c", "s", "c", "d"},
+            {"c", "d", "h", "c", "s", "c", "h"},
+            {"c", "d", "h", "c", "s", "c", "s"},
+            {"c", "d", "h", "c", "s", "d", "c"},
+            {"c", "d", "h", "c", "s", "d", "d"},
+            {"c", "d", "h", "c", "s", "d", "h"},
+            {"c", "d", "h", "c", "s", "d", "s"},
+            {"c", "d", "h", "c", "s", "h", "c"},
+            {"c", "d", "h", "c", "s", "h", "d"},
+            {"c", "d", "h", "c", "s", "h", "h"},
+            {"c", "d", "h", "c", "s", "h", "s"},
+            {"c", "d", "h", "c", "s", "s", "c"},
+            {"c", "d", "h", "c", "s", "s", "d"},
+            {"c", "d", "h", "c", "s", "s", "h"},
+            {"c", "d", "h", "c", "s", "s", "s"},
+            {"c", "d", "h", "d", "c", "c", "c"},
+            {"c", "d", "h", "d", "c", "c", "d"},
+            {"c", "d", "h", "d", "c", "c", "h"},
+            {"c", "d", "h", "d", "c", "c", "s"},
+            {"c", "d", "h", "d", "c", "d", "c"},
+            {"c", "d", "h", "d", "c", "d", "d"},
+            {"c", "d", "h", "d", "c", "d", "h"},
+            {"c", "d", "h", "d", "c", "d", "s"},
+            {"c", "d", "h", "d", "c", "h", "c"},
+            {"c", "d", "h", "d", "c", "h", "d"},
+            {"c", "d", "h", "d", "c", "h", "h"},
+            {"c", "d", "h", "d", "c", "h", "s"},
+            {"c", "d", "h", "d", "c", "s", "c"},
+            {"c", "d", "h", "d", "c", "s", "d"},
+            {"c", "d", "h", "d", "c", "s", "h"},
+            {"c", "d", "h", "d", "c", "s", "s"},
+            {"c", "d", "h", "d", "d", "c", "c"},
+            {"c", "d", "h", "d", "d", "c", "d"},
+            {"c", "d", "h", "d", "d", "c", "h"},
+            {"c", "d", "h", "d", "d", "c", "s"},
+            {"c", "d", "h", "d", "d", "d", "c"},
+            {"c", "d", "h", "d", "d", "d", "d"},
+            {"c", "d", "h", "d", "d", "d", "h"},
+            {"c", "d", "h", "d", "d", "d", "s"},
+            {"c", "d", "h", "d", "d", "h", "c"},
+            {"c", "d", "h", "d", "d", "h", "d"},
+            {"c", "d", "h", "d", "d", "h", "h"},
+            {"c", "d", "h", "d", "d", "h", "s"},
+            {"c", "d", "h", "d", "d", "s", "c"},
+            {"c", "d", "h", "d", "d", "s", "d"},
+            {"c", "d", "h", "d", "d", "s", "h"},
+            {"c", "d", "h", "d", "d", "s", "s"},
+            {"c", "d", "h", "d", "h", "c", "c"},
+            {"c", "d", "h", "d", "h", "c", "d"},
+            {"c", "d", "h", "d", "h", "c", "h"},
+            {"c", "d", "h", "d", "h", "c", "s"},
+            {"c", "d", "h", "d", "h", "d", "c"},
+            {"c", "d", "h", "d", "h", "d", "d"},
+            {"c", "d", "h", "d", "h", "d", "h"},
+            {"c", "d", "h", "d", "h", "d", "s"},
+            {"c", "d", "h", "d", "h", "h", "c"},
+            {"c", "d", "h", "d", "h", "h", "d"},
+            {"c", "d", "h", "d", "h", "h", "h"},
+            {"c", "d", "h", "d", "h", "h", "s"},
+            {"c", "d", "h", "d", "h", "s", "c"},
+            {"c", "d", "h", "d", "h", "s", "d"},
+            {"c", "d", "h", "d", "h", "s", "h"},
+            {"c", "d", "h", "d", "h", "s", "s"},
+            {"c", "d", "h", "d", "s", "c", "c"},
+            {"c", "d", "h", "d", "s", "c", "d"},
+            {"c", "d", "h", "d", "s", "c", "h"},
+            {"c", "d", "h", "d", "s", "c", "s"},
+            {"c", "d", "h", "d", "s", "d", "c"},
+            {"c", "d", "h", "d", "s", "d", "d"},
+            {"c", "d", "h", "d", "s", "d", "h"},
+            {"c", "d", "h", "d", "s", "d", "s"},
+            {"c", "d", "h", "d", "s", "h", "c"},
+            {"c", "d", "h", "d", "s", "h", "d"},
+            {"c", "d", "h", "d", "s", "h", "h"},
+            {"c", "d", "h", "d", "s", "h", "s"},
+            {"c", "d", "h", "d", "s", "s", "c"},
+            {"c", "d", "h", "d", "s", "s", "d"},
+            {"c", "d", "h", "d", "s", "s", "h"},
+            {"c", "d", "h", "d", "s", "s", "s"},
+            {"c", "d", "h", "h", "c", "c", "c"},
+            {"c", "d", "h", "h", "c", "c", "d"},
+            {"c", "d", "h", "h", "c", "c", "h"},
+            {"c", "d", "h", "h", "c", "c", "s"},
+            {"c", "d", "h", "h", "c", "d", "c"},
+            {"c", "d", "h", "h", "c", "d", "d"},
+            {"c", "d", "h", "h", "c", "d", "h"},
+            {"c", "d", "h", "h", "c", "d", "s"},
+            {"c", "d", "h", "h", "c", "h", "c"},
+            {"c", "d", "h", "h", "c", "h", "d"},
+            {"c", "d", "h", "h", "c", "h", "h"},
+            {"c", "d", "h", "h", "c", "h", "s"},
+            {"c", "d", "h", "h", "c", "s", "c"},
+            {"c", "d", "h", "h", "c", "s", "d"},
+            {"c", "d", "h", "h", "c", "s", "h"},
+            {"c", "d", "h", "h", "c", "s", "s"},
+            {"c", "d", "h", "h", "d", "c", "c"},
+            {"c", "d", "h", "h", "d", "c", "d"},
+            {"c", "d", "h", "h", "d", "c", "h"},
+            {"c", "d", "h", "h", "d", "c", "s"},
+            {"c", "d", "h", "h", "d", "d", "c"},
+            {"c", "d", "h", "h", "d", "d", "d"},
+            {"c", "d", "h", "h", "d", "d", "h"},
+            {"c", "d", "h", "h", "d", "d", "s"},
+            {"c", "d", "h", "h", "d", "h", "c"},
+            {"c", "d", "h", "h", "d", "h", "d"},
+            {"c", "d", "h", "h", "d", "h", "h"},
+            {"c", "d", "h", "h", "d", "h", "s"},
+            {"c", "d", "h", "h", "d", "s", "c"},
+            {"c", "d", "h", "h", "d", "s", "d"},
+            {"c", "d", "h", "h", "d", "s", "h"},
+            {"c", "d", "h", "h", "d", "s", "s"},
+            {"c", "d", "h", "h", "h", "c", "c"},
+            {"c", "d", "h", "h", "h", "c", "d"},
+            {"c", "d", "h", "h", "h", "c", "h"},
+            {"c", "d", "h", "h", "h", "c", "s"},
+            {"c", "d", "h", "h", "h", "d", "c"},
+            {"c", "d", "h", "h", "h", "d", "d"},
+            {"c", "d", "h", "h", "h", "d", "h"},
+            {"c", "d", "h", "h", "h", "d", "s"},
+            {"c", "d", "h", "h", "h", "h", "c"},
+            {"c", "d", "h", "h", "h", "h", "d"},
+            {"c", "d", "h", "h", "h", "h", "h"},
+            {"c", "d", "h", "h", "h", "h", "s"},
+            {"c", "d", "h", "h", "h", "s", "c"},
+            {"c", "d", "h", "h", "h", "s", "d"},
+            {"c", "d", "h", "h", "h", "s", "h"},
+            {"c", "d", "h", "h", "h", "s", "s"},
+            {"c", "d", "h", "h", "s", "c", "c"},
+            {"c", "d", "h", "h", "s", "c", "d"},
+            {"c", "d", "h", "h", "s", "c", "h"},
+            {"c", "d", "h", "h", "s", "c", "s"},
+            {"c", "d", "h", "h", "s", "d", "c"},
+            {"c", "d", "h", "h", "s", "d", "d"},
+            {"c", "d", "h", "h", "s", "d", "h"},
+            {"c", "d", "h", "h", "s", "d", "s"},
+            {"c", "d", "h", "h", "s", "h", "c"},
+            {"c", "d", "h", "h", "s", "h", "d"},
+            {"c", "d", "h", "h", "s", "h", "h"},
+            {"c", "d", "h", "h", "s", "h", "s"},
+            {"c", "d", "h", "h", "s", "s", "c"},
+            {"c", "d", "h", "h", "s", "s", "d"},
+            {"c", "d", "h", "h", "s", "s", "h"},
+            {"c", "d", "h", "h", "s", "s", "s"},
+            {"c", "d", "h", "s", "c", "c", "c"},
+            {"c", "d", "h", "s", "c", "c", "d"},
+            {"c", "d", "h", "s", "c", "c", "h"},
+            {"c", "d", "h", "s", "c", "c", "s"},
+            {"c", "d", "h", "s", "c", "d", "c"},
+            {"c", "d", "h", "s", "c", "d", "d"},
+            {"c", "d", "h", "s", "c", "d", "h"},
+            {"c", "d", "h", "s", "c", "d", "s"},
+            {"c", "d", "h", "s", "c", "h", "c"},
+            {"c", "d", "h", "s", "c", "h", "d"},
+            {"c", "d", "h", "s", "c", "h", "h"},
+            {"c", "d", "h", "s", "c", "h", "s"},
+            {"c", "d", "h", "s", "c", "s", "c"},
+            {"c", "d", "h", "s", "c", "s", "d"},
+            {"c", "d", "h", "s", "c", "s", "h"},
+            {"c", "d", "h", "s", "c", "s", "s"},
+            {"c", "d", "h", "s", "d", "c", "c"},
+            {"c", "d", "h", "s", "d", "c", "d"},
+            {"c", "d", "h", "s", "d", "c", "h"},
+            {"c", "d", "h", "s", "d", "c", "s"},
+            {"c", "d", "h", "s", "d", "d", "c"},
+            {"c", "d", "h", "s", "d", "d", "d"},
+            {"c", "d", "h", "s", "d", "d", "h"},
+            {"c", "d", "h", "s", "d", "d", "s"},
+            {"c", "d", "h", "s", "d", "h", "c"},
+            {"c", "d", "h", "s", "d", "h", "d"},
+            {"c", "d", "h", "s", "d", "h", "h"},
+            {"c", "d", "h", "s", "d", "h", "s"},
+            {"c", "d", "h", "s", "d", "s", "c"},
+            {"c", "d", "h", "s", "d", "s", "d"},
+            {"c", "d", "h", "s", "d", "s", "h"},
+            {"c", "d", "h", "s", "d", "s", "s"},
+            {"c", "d", "h", "s", "h", "c", "c"},
+            {"c", "d", "h", "s", "h", "c", "d"},
+            {"c", "d", "h", "s", "h", "c", "h"},
+            {"c", "d", "h", "s", "h", "c", "s"},
+            {"c", "d", "h", "s", "h", "d", "c"},
+            {"c", "d", "h", "s", "h", "d", "d"},
+            {"c", "d", "h", "s", "h", "d", "h"},
+            {"c", "d", "h", "s", "h", "d", "s"},
+            {"c", "d", "h", "s", "h", "h", "c"},
+            {"c", "d", "h", "s", "h", "h", "d"},
+            {"c", "d", "h", "s", "h", "h", "h"},
+            {"c", "d", "h", "s", "h", "h", "s"},
+            {"c", "d", "h", "s", "h", "s", "c"},
+            {"c", "d", "h", "s", "h", "s", "d"},
+            {"c", "d", "h", "s", "h", "s", "h"},
+            {"c", "d", "h", "s", "h", "s", "s"},
+            {"c", "d", "h", "s", "s", "c", "c"},
+            {"c", "d", "h", "s", "s", "c", "d"},
+            {"c", "d", "h", "s", "s", "c", "h"},
+            {"c", "d", "h", "s", "s", "c", "s"},
+            {"c", "d", "h", "s", "s", "d", "c"},
+            {"c", "d", "h", "s", "s", "d", "d"},
+            {"c", "d", "h", "s", "s", "d", "h"},
+            {"c", "d", "h", "s", "s", "d", "s"},
+            {"c", "d", "h", "s", "s", "h", "c"},
+            {"c", "d", "h", "s", "s", "h", "d"},
+            {"c", "d", "h", "s", "s", "h", "h"},
+            {"c", "d", "h", "s", "s", "h", "s"},
+            {"c", "d", "h", "s", "s", "s", "c"},
+            {"c", "d", "h", "s", "s", "s", "d"},
+            {"c", "d", "h", "s", "s", "s", "h"},
+            {"c", "d", "h", "s", "s", "s", "s"}
+            };
+    }
+    
+    // Used to track which canonical arrangements we've already seen
     static unordered_set<string> seenCanonical;
     if (seenCanonical.empty()) {
         for (const auto &p : riverEquities)
             seenCanonical.insert(p.first);
     }
-
-    // Recursive function to assign suits for card at index cardPos
-    function<void (int)> assignSuits = [&](int cardPos) {
-        // If we have assigned suits for all 7 cards, then create the canonical representation
-        if (cardPos == 7) {
-            string canStr = canonicalRiver(partialHand);
-            
-            // O(1) lookup instead of O(n) search
-            if (seenCanonical.find(canStr) == seenCanonical.end()) {
-                riverEquities.push_back({ canStr, 0.0 });
-                seenCanonical.insert(canStr);
-                count++;
-                
-                if (count % 1000 == 0) {
-                    auto now = chrono::steady_clock::now();
-                    auto elapsed = chrono::duration_cast<chrono::seconds>(now - startTime).count();
-                    cout << "Generated " << count << " unique canonical rivers. Elapsed time: " 
-                         << elapsed << " seconds\r" << flush;
-                }
-                
-                if (count >= maxSamples)
-                    return;
-            }
-            return;
+    
+    // Check if we have predefined patterns for this rank pattern
+    if (rankPatternToSuitPatterns.find(rankPatternKey) == rankPatternToSuitPatterns.end()) {
+        cout << "Warning: No predefined suit patterns for rank pattern: " << rankPatternKey << endl;
+        return;
+    }
+    
+    // Get the suit patterns for this rank pattern
+    const auto& suitPatterns = rankPatternToSuitPatterns[rankPatternKey];
+    
+    // For each suit pattern, create the corresponding hand
+    for (const auto& pattern : suitPatterns) {
+        // Verify pattern length matches the number of cards (7)
+        if (pattern.size() != 7) {
+            cerr << "Error: Invalid pattern length for rank pattern: " << rankPatternKey 
+                 << ", expected 7 but got " << pattern.size() << endl;
+            continue; // Skip this pattern
         }
         
-        // Determine the rank index for the current card
-        int curRank = rankIndices[cardPos];
+        // Map ranks to their canonical positions
+        vector<vector<int>> rankToPositions(rankPattern.size());
+        int rankIdx = 0;
+        for (int i = 0; i < RANKS.size(); i++) {
+            if (rankCounts[i] > 0) {
+                for (int pos : rankPositions[i]) {
+                    rankToPositions[rankIdx].push_back(pos);
+                }
+                rankIdx++;
+            }
+        }
         
-        // Loop over possible suits from currentMinSuitIndex to the maximum index
-        for (int suitIndex = currentMinSuitIndex; suitIndex < static_cast<int>(SUITS.size()); suitIndex++) {
-            int deckIndex = curRank * SUITS.size() + suitIndex;
-            if (usedCards[deckIndex])
-                continue;
+        // Create a mapping from pattern positions to actual card positions
+        vector<string> suitAssignment(7);
+        int patternPos = 0;
+        
+        // Safely assign suits to positions
+        try {
+            // Initialize all positions with a default suit
+            for (int i = 0; i < 7; i++) {
+                suitAssignment[i] = "c"; // Default to clubs
+            }
             
-            // Choose this card
-            Card card { RANKS[curRank], SUITS[suitIndex] };
-            partialHand.push_back(card);
-            usedCards[deckIndex] = true;
+            // Directly map the pattern to the 7 cards
+            for (int i = 0; i < 7 && i < pattern.size(); i++) {
+                suitAssignment[i] = pattern[i];
+            }
             
-            // Save the current minimum suit index
-            int prevMinSuitIndex = currentMinSuitIndex;
-            // Update the minimum suit index for the next card
-            currentMinSuitIndex = suitIndex;
+            // Verify all positions got assigned
+            for (int i = 0; i < 7; i++) {
+                if (suitAssignment[i].empty()) {
+                    cerr << "Position " << i << " has no suit assigned!" << endl;
+                    suitAssignment[i] = "c"; // Default to clubs if empty
+                }
+            }
+        } catch (const std::exception& e) {
+            cerr << "Exception during suit assignment: " << e.what() 
+                 << " for rank pattern: " << rankPatternKey << endl;
+            continue; // Skip this pattern
+        }
+        
+        // Create the hand with these suit assignments
+        vector<Card> hand;
+        try {
+            for (int i = 0; i < 7; i++) {
+                // Validate that we have a valid rank and suit before creating the card
+                if (rankIndices[i] < 0 || rankIndices[i] >= RANKS.size()) {
+                    cerr << "Error: Invalid rank index: " << rankIndices[i] << endl;
+                    throw std::runtime_error("Invalid rank index");
+                }
+                
+                if (suitAssignment[i].empty()) {
+                    cerr << "Error: Empty suit assignment at position " << i << endl;
+                    throw std::runtime_error("Empty suit assignment");
+                }
+                
+                // Verify the suit is one of the valid suits
+                if (suitAssignment[i] != "c" && suitAssignment[i] != "d" && 
+                    suitAssignment[i] != "h" && suitAssignment[i] != "s") {
+                    cerr << "Error: Invalid suit '" << suitAssignment[i] << "' at position " << i << endl;
+                    throw std::runtime_error("Invalid suit");
+                }
+                
+                hand.push_back(Card{RANKS[rankIndices[i]], suitAssignment[i]});
+            }
+        } catch (const std::exception& e) {
+            cerr << "Exception creating hand: " << e.what() 
+                 << " for rank pattern: " << rankPatternKey << endl;
+            continue; // Skip this pattern
+        }
+        
+        // Get canonical representation
+        string canStr;
+        try {
+            canStr = canonicalRiver(hand);
+        } catch (const std::exception& e) {
+            cerr << "Exception in canonicalRiver: " << e.what() 
+                 << " for rank pattern: " << rankPatternKey << endl;
+            continue; // Skip this pattern
+        }
+        
+        // Check if we've seen this canonical form before
+        if (seenCanonical.find(canStr) == seenCanonical.end()) {
+            riverEquities.push_back({canStr, 0.0});
+            seenCanonical.insert(canStr);
+            count++;
             
-            assignSuits(cardPos + 1);
-            
-            // Backtrack: remove the card and restore previous state
-            partialHand.pop_back();
-            usedCards[deckIndex] = false;
-            currentMinSuitIndex = prevMinSuitIndex;
+            if (count % 1000 == 0) {
+                auto now = chrono::steady_clock::now();
+                auto elapsed = chrono::duration_cast<chrono::seconds>(now - startTime).count();
+                cout << "Generated " << count << " unique canonical rivers. Elapsed time: " 
+                     << elapsed << " seconds\r" << flush;
+            }
             
             if (count >= maxSamples)
                 return;
         }
-    };
-    
-    assignSuits(0);
+    }
 }
 
 int main(int argc, char* argv[]) {
@@ -819,3 +2173,10 @@ int main(int argc, char* argv[]) {
     
     return 0; // Indicate successful completion
 }
+
+// NOTE: For rank combinations like [2,2,2,2,3,3,3], we're seeing 0 hands generated.
+// This might be due to the suit assignment constraints. When we have 4 cards of rank "2",
+// we need to assign all 4 suits (clubs, diamonds, hearts, spades).
+// Similarly, with 3 cards of rank "3", we need to assign 3 different suits.
+// The issue could be in how we're enforcing the canonical ordering of suits,
+// especially when we have multiple cards of the same rank.

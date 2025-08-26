@@ -26,5 +26,5 @@ public:
 void saveInfoSetsToFile(const std::string& filename);
 
 // Add this near the top of the file with other function declarations
-void trainMCCFR(AoFGame& game, int iterations);
+void trainMCCFR(SpinGoGame& game, int iterations);
 

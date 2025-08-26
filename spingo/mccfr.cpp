@@ -7,7 +7,9 @@
 #include <iomanip>
 #include <fstream>
 #include <chrono>
-// Standalone Node class (not inside AoFState)
+#include <set>
+
+// Forward declarations - keep only these, remove any class definitions
 class Node {
 public:
     Node();
@@ -23,7 +25,7 @@ public:
 std::unordered_map<std::string, Node> nodeMap;
 
 // Node implementation
-Node::Node() : regretSum(3, 0.0), strategy(3, 0.0), strategySum(3, 0.0) {}
+Node::Node() : regretSum(5, 0.0), strategy(5, 0.0), strategySum(5, 0.0) {}
 
 Node::Node(int numActions) : regretSum(numActions, 0.0), 
                            strategy(numActions, 0.0),
@@ -74,43 +76,94 @@ std::string getAbstractedCard(const Card& card1, const Card& card2, bool isFirst
     }
 }
 
-// Helper function implementation
-std::string getInformationSet(const AoFState* state, int player) {
+// Helper function to get flop cluster from the clustering file
+int getFlopCluster(const std::vector<Card>& communityCards) {
+    // Default cluster if not found
+    int defaultCluster = 0;
+    
+    // Check if we have at least 3 cards for the flop
+    if (communityCards.size() < 3) {
+        return defaultCluster;
+    }
+    
+    // Create a string representation of the flop cards
+    std::string flopStr = communityCards[0].toString() + " " + 
+                          communityCards[1].toString() + " " + 
+                          communityCards[2].toString();
+    
+    // Here you would look up the cluster from the flop clustering file
+    // This is a placeholder - you'll need to implement the actual lookup
+    // from ./utils/l2_flop_clustered_hands.csv
+    
+    // For now, return a default value
+    return defaultCluster;
+}
+
+// Helper function to get turn cluster from the clustering file
+int getTurnCluster(const std::vector<Card>& communityCards) {
+    // Default cluster if not found
+    int defaultCluster = 0;
+    
+    // Check if we have at least 4 cards for the turn
+    if (communityCards.size() < 4) {
+        return defaultCluster;
+    }
+    
+    // Create a string representation of the turn cards
+    std::string turnStr = communityCards[0].toString() + " " + 
+                          communityCards[1].toString() + " " + 
+                          communityCards[2].toString() + " " +
+                          communityCards[3].toString();
+    
+    // Here you would look up the cluster from the turn clustering file
+    // This is a placeholder - you'll need to implement the actual lookup
+    // from ./utils/le2_turn_clustered_hands.csv
+    
+    // For now, return a default value
+    return defaultCluster;
+}
+
+// Helper function to get river cluster from the clustering file
+int getRiverCluster(const std::vector<Card>& communityCards) {
+    // Default cluster if not found
+    int defaultCluster = 0;
+    
+    // Check if we have at least 5 cards for the river
+    if (communityCards.size() < 5) {
+        return defaultCluster;
+    }
+    
+    // Create a string representation of the river cards
+    std::string riverStr = communityCards[0].toString() + " " + 
+                           communityCards[1].toString() + " " + 
+                           communityCards[2].toString() + " " +
+                           communityCards[3].toString() + " " +
+                           communityCards[4].toString();
+    
+    // Here you would look up the cluster from the river clustering file
+    // This is a placeholder - you'll need to implement the actual lookup
+    // from ./utils/le2_river_clustered_hands.csv
+    
+    // For now, return a default value
+    return defaultCluster;
+}
+
+// Now define getInformationSet after SpinGoState is fully defined
+std::string getInformationSet(const SpinGoState* state, int player) {
+    // Don't create infosets for chance nodes
+    if (state->is_chance_node()) {
+        return "";
+    }
+    
     std::stringstream ss;
     ss << "P" << player << ":";
     
-    // Add status of all other players when player is 0 or 1
-    if (player <= 1) {
-        for (int p = 0; p < 4; p++) {
-            if (p != player) {
-                ss << "[P" << p;
-                if (state->folded[p]) {
-                    ss << ":F";  // F for Folded
-                } else if (state->all_in_players.find(p) != state->all_in_players.end()) {
-                    ss << ":A";  // A for All-in
-                } else {
-                    ss << ":P";  // P for Playing/Pending
-                }
-                ss << "]";
-            }
-        }
-    } else {
-        // For players 2 and 3, only show players before them
-        for (int p = 0; p < player; p++) {
-            ss << "[P" << p;
-            if (state->folded[p]) {
-                ss << ":F";
-            } else if (state->all_in_players.find(p) != state->all_in_players.end()) {
-                ss << ":A";
-            } else {
-                ss << ":P";
-            }
-            ss << "]";
-        }
-    }
+    
+    // Add round information
+    ss << " Round:" << state->round << " ";
     
     // Add current player's hole cards in abstracted form
-    const auto& cards = state->getHoleCards();
+    const auto& cards = state->cards;  // Access member variable directly
     int firstCardIdx = player * 2;
     int secondCardIdx = player * 2 + 1;
     
@@ -133,7 +186,40 @@ std::string getInformationSet(const AoFState* state, int player) {
         ss << getAbstractedCard(cards[secondCardIdx], cards[firstCardIdx], false) << " ";
     }
     
-    ss << "Pot:" << state->pot;
+    // Add community cards information based on the round
+    if (state->round == "flop" || state->round == "turn" || state->round == "river" || state->round == "showdown") {
+        // For flop, turn, and river, add cluster information
+        if (state->round == "flop") {
+            // Get flop cluster from the flop clustering file
+            int flopCluster = getFlopCluster(state->community_cards);
+            ss << " FlopCluster:" << flopCluster;
+        } else if (state->round == "turn") {
+            // Get turn cluster from the turn clustering file
+            int turnCluster = getTurnCluster(state->community_cards);
+            ss << " TurnCluster:" << turnCluster;
+        } else if (state->round == "river" || state->round == "showdown") {
+            // Get river cluster from the river clustering file
+            int riverCluster = getRiverCluster(state->community_cards);
+            ss << " RiverCluster:" << riverCluster;
+        }
+    }
+    
+    // Add action sequence from the beginning
+    ss << " Actions:";
+    const auto& bets = state->bets;    // Access member variable directly
+    for (int p = 0; p < NUM_PLAYERS; p++) {
+        if (bets[p] != Action::UNKNOWN) {
+            ss << "[P" << p << ":" << action_to_string(bets[p]) << "]";
+        }
+    }
+    
+    // Add pot information
+    const auto& pot = state->pot;      // Access member variable directly
+    ss << " Pot:" << (pot[0] + pot[1] + pot[2]);
+    
+    // Add current bet information
+    ss << " CurrentBet:" << state->current_bet;
+    
     return ss.str();
 }
 
@@ -150,23 +236,21 @@ int sampleAction(const std::vector<double>& probs) {
 }
 
 // MCCFR implementation
-double mccfr(AoFState* state, int player, std::vector<double>& reachProb) {
-    if (state->isTerminal()) {
-        std::vector<float> util = state->returns();
-        double retVal = util[player];
-        return retVal;  // Don't delete state here
+double mccfr(SpinGoState* state, int player, std::vector<double>& reachProb) {
+    if (state->game_over()) {
+        std::vector<double> util = state->returns();
+        return util[player];
     }
 
-    if (state->isChanceNode()) {
-        state->applyAction(Action::DEAL);
-        double value = mccfr(state, player, reachProb);  // Use the same state
-        return value;
+    if (state->is_chance_node()) {
+        state->apply_action(Action::DEAL);
+        return mccfr(state, player, reachProb);
     }
 
-    int currPlayer = state->currentPlayer();
+    int currPlayer = state->current_player();
     std::string infoSet = getInformationSet(state, currPlayer);
 
-    std::vector<Action> allLegal = state->legalActions();
+    std::vector<Action> allLegal = state->legal_actions();
     std::vector<int> legalActs(allLegal.size());
     std::iota(legalActs.begin(), legalActs.end(), 0);
 
@@ -180,8 +264,8 @@ double mccfr(AoFState* state, int player, std::vector<double>& reachProb) {
         double nodeUtil = 0.0;
         
         for (size_t i = 0; i < legalActs.size(); i++) {
-            AoFState nextState = state->clone();  // Create a copy
-            nextState.applyAction(allLegal[i]);
+            SpinGoState nextState = *state; // Create a copy of the state
+            nextState.apply_action(allLegal[i]);
             std::vector<double> nextReach = reachProb;
             nextReach[player] *= strategy[i];
             util[i] = mccfr(&nextState, player, nextReach);
@@ -205,12 +289,12 @@ double mccfr(AoFState* state, int player, std::vector<double>& reachProb) {
         std::vector<double> nextReach = reachProb;
         nextReach[currPlayer] *= strategy[actionIndex];
         
-        state->applyAction(allLegal[actionIndex]);  // Modify the existing state
-        double value = mccfr(state, player, nextReach);
-        return value;
+        state->apply_action(allLegal[actionIndex]);
+        return mccfr(state, player, nextReach);
     }
 }
-void trainMCCFR(AoFGame& game, int iterations) {
+
+void trainMCCFR(SpinGoGame& game, int iterations) {
     std::cout << "Training progress:\n";
     
     std::vector<double> totalUtility(NUM_PLAYERS, 0.0);
@@ -238,7 +322,7 @@ void trainMCCFR(AoFGame& game, int iterations) {
                   << minutes << "m " << seconds << "s)" << std::flush;
         
         for (int p = 0; p < NUM_PLAYERS; p++) {
-            AoFState state = game.newInitialState();  // Create state on stack
+            SpinGoState state = game.new_initial_state();  // Create state on stack
             std::vector<double> reachProb(NUM_PLAYERS, 1.0);
             
             double value = mccfr(&state, p, reachProb);
@@ -293,3 +377,21 @@ void saveInfoSetsToFile(const std::string& filename) {
     std::cout << "InfoSets saved to " << filename << std::endl;
 }
 
+int main() {
+    // Create a new SpinGoGame instance
+    SpinGoGame game;
+    
+    // Set the number of training iterations
+    int iterations = 10000;  // You can adjust this number
+    
+    // Run the MCCFR training
+    trainMCCFR(game, iterations);
+    
+    // Print the learned strategies
+    printAverageStrategies();
+    
+    // Save the learned strategies to a file
+    saveInfoSetsToFile("spingo_strategies.txt");
+    
+    return 0;
+}
