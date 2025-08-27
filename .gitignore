@@ -5,3 +5,5 @@ utils/repr_emd_flop_equities_clustered_hands_with_avg_equity.csv
 utils/repr_emd_turn_equities_clustered_hands_with_avg_equity.csv
 utils/repr_emd_river_equities_clustered_hands_with_avg_equity.csv
 .env
+./vscodeutils/river_equities_processed.csv
+utils/*.csv
